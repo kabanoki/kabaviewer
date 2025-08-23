@@ -124,9 +124,9 @@ class ImageViewer(QMainWindow):
         # メニューの設定
         self.init_menu()
 
-    # クリックでスライドショーをトグルするメソッドを追加
+    # クリックでスライドショーをトグルするメソッドを追加（ビューアータブ選択時のみ）
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and self.tabs.currentWidget() == self.image_tab:
             self.toggle_slideshow()
 
     def toggle_slideshow(self):
@@ -523,9 +523,6 @@ class ImageViewer(QMainWindow):
 ##
 # 移動メニュー関連
 ##
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.toggle_slideshow()
     def go_to_slide(self, index):
         if 0 <= index < len(self.images):
             self.current_image_index = index
