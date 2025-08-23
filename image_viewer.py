@@ -1,7 +1,7 @@
 # back
 import os
 import random
-from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog
+from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont
 from PyQt5.QtCore import Qt, QTimer, QSettings
 from PIL import Image
@@ -13,6 +13,13 @@ class ImageViewer(QMainWindow):
         super().__init__()
         self.sort_order = ('random', True)
         self.current_image_index = 0
+        self.display_mode = 'single'  # 'single' または 'grid'
+        
+        # 4分割グリッド用の独立したインデックス配列とポジション
+        self.grid_indices = [[], [], [], []]  # 各グリッドの独立した画像順序
+        self.grid_positions = [0, 0, 0, 0]    # 各グリッドの現在位置
+        self.selected_grid = -1  # 現在選択されているグリッド（0-3、-1は選択なし）
+        
         self.initUI()
 
     def initUI(self):
@@ -31,11 +38,40 @@ class ImageViewer(QMainWindow):
         # 画像表示用のタブ
         self.image_tab = QWidget()
         self.image_layout = QVBoxLayout()
-        self.label = QLabel(self)
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setMinimumSize(800, 600)  # ラベルの最小サイズを固定
-        self.image_layout.addWidget(self.label)
+        
+        # シングル表示用ラベル（従来のもの）
+        self.single_label = QLabel(self)
+        self.single_label.setAlignment(Qt.AlignCenter)
+        self.single_label.setMinimumSize(800, 600)
+        
+        # 4分割表示用のグリッドレイアウトと4つのラベル
+        self.grid_widget = QWidget()
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.grid_labels = []
+        
+        for i in range(4):
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumSize(200, 150)
+            label.setStyleSheet("border: 1px solid gray;")
+            # クリックイベント用のカスタムプロパティ
+            label.grid_index = i
+            label.mousePressEvent = lambda event, idx=i: self.grid_label_clicked(idx)
+            self.grid_labels.append(label)
+        
+        # 2x2で配置
+        self.grid_layout.addWidget(self.grid_labels[0], 0, 0)  # 左上
+        self.grid_layout.addWidget(self.grid_labels[1], 0, 1)  # 右上
+        self.grid_layout.addWidget(self.grid_labels[2], 1, 0)  # 左下
+        self.grid_layout.addWidget(self.grid_labels[3], 1, 1)  # 右下
+        
+        # 初期状態はシングル表示
+        self.image_layout.addWidget(self.single_label)
+        self.image_layout.addWidget(self.grid_widget)
         self.image_tab.setLayout(self.image_layout)
+        
+        # grid_widgetは最初は非表示
+        self.grid_widget.setVisible(False)
 
         # メインレイアウトを作成
         self.main_layout = QVBoxLayout()
@@ -228,6 +264,7 @@ class ImageViewer(QMainWindow):
                 raise ValueError("No images found in the selected folder.")
 
             self.sort_images()
+            self.initialize_grid_system()  # 独立したグリッドシステムを初期化
             self.show_image()
             self.settings.setValue("last_folder", folder_path)
             self.history_tab.update_folder_history(folder_path)
@@ -238,13 +275,44 @@ class ImageViewer(QMainWindow):
             self.select_folder()
 
     def show_image(self):
+        if self.display_mode == 'single':
+            self.show_image_single()
+        else:
+            self.show_image_grid()
+
+    def initialize_grid_system(self):
+        """4つの独立したランダムグリッドシステムを初期化"""
+        if not self.images:
+            return
+        
+        total_images = len(self.images)
+        
+        # 各グリッドに独立したランダム配列を作成
+        for i in range(4):
+            # 全画像インデックスのリストを作成
+            indices = list(range(total_images))
+            # 各グリッドを独立してランダムシャッフル
+            random.shuffle(indices)
+            self.grid_indices[i] = indices
+            self.grid_positions[i] = 0  # 各グリッドの開始位置をリセット
+        
+        # 独立グリッドシステム初期化完了
+
+    def shuffle_grid_system(self):
+        """グリッドシステムを再シャッフル（手動実行用）"""
+        self.initialize_grid_system()
+        if self.display_mode == 'grid':
+            self.show_image()
+
+    def show_image_single(self):
+        """シングル表示モード（従来の1枚表示）"""
         if self.images:
             image_path = self.images[self.current_image_index]
             try:
                 image = Image.open(image_path)
 
                 # ラベルのサイズに画像をフィットさせる
-                window_width, window_height = self.label.size().width(), self.label.size().height()
+                window_width, window_height = self.single_label.size().width(), self.single_label.size().height()
                 image_ratio = image.width / image.height
                 window_ratio = window_width / window_height
 
@@ -260,31 +328,176 @@ class ImageViewer(QMainWindow):
                 pixmap = QPixmap.fromImage(QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888))
 
                 # ピクセル単位で正確に表示
-                self.label.setPixmap(pixmap.scaled(self.label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.single_label.setPixmap(pixmap.scaled(self.single_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-                # ウィンドウタイトルにフォルダ名、画像の番号、並び順を表示
-                folder_name = os.path.basename(os.path.dirname(image_path))
-                order_type, is_ascending = self.sort_order
-                order_type_str = {
-                    'random': 'ランダム',
-                    'date_modified': '変更日順',
-                    'date_added': '追加日順',
-                    'date_created': '作成日順',
-                    'name': '名前順'
-                }.get(order_type, '不明な順番')
-                order_direction = '昇順' if is_ascending else '降順'
-
-                self.setWindowTitle(f"KabaViewer - {folder_name} - {self.current_image_index + 1}/{len(self.images)} - {order_type_str} ({order_direction})")
+                self.update_window_title()
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to display image {image_path}.")
                 print(f"Failed to load image {image_path}: {e}")
 
+    def show_image_grid(self):
+        """4分割グリッド表示モード"""
+        if not self.images:
+            return
+            
+        # 現在のindexを中心とした4枚の画像インデックスを計算
+        indices = self.calculate_grid_indices()
+        
+        for i, img_index in enumerate(indices):
+            if 0 <= img_index < len(self.images):
+                try:
+                    image_path = self.images[img_index]
+                    image = Image.open(image_path)
+                    
+                    # グリッド用にサイズ調整（小さめ）
+                    label_size = self.grid_labels[i].size()
+                    preview_size = (label_size.width() - 10, label_size.height() - 10)
+                    image.thumbnail(preview_size, Image.Resampling.LANCZOS)
+                    
+                    # QPixmapに変換
+                    image_rgba = image.convert("RGBA")
+                    w, h = image.size
+                    qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
+                    pixmap = QPixmap.fromImage(qimage)
+                    
+                    # 選択されたグリッドには赤い境界線、その他は通常の境界線
+                    # selected_grid が -1 の場合はどのグリッドも選択されていない
+                    if self.selected_grid != -1 and i == self.selected_grid:
+                        self.grid_labels[i].setStyleSheet("border: 3px solid red;")
+                    else:
+                        self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
+                    
+                    self.grid_labels[i].setPixmap(pixmap)
+                    
+                except Exception as e:
+                    self.grid_labels[i].setText("読み込み\nエラー")
+                    print(f"Failed to load grid image {image_path}: {e}")
+                    
+                    # エラー時も選択状態に応じて境界線を設定
+                    if self.selected_grid != -1 and i == self.selected_grid:
+                        self.grid_labels[i].setStyleSheet("border: 3px solid red;")
+                    else:
+                        self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
+            else:
+                self.grid_labels[i].clear()
+                self.grid_labels[i].setText("画像なし")
+                
+                # 画像がない場合も選択状態に応じて境界線を設定
+                if self.selected_grid != -1 and i == self.selected_grid:
+                    self.grid_labels[i].setStyleSheet("border: 3px solid red;")
+                else:
+                    self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
+        
+        self.update_window_title()
+
+    def calculate_grid_indices(self):
+        """グリッド表示用の4つの画像インデックスを計算（独立ランダム配列使用）"""
+        if not self.images or not self.grid_indices[0]:
+            return [0, 0, 0, 0]
+        
+        indices = []
+        for i in range(4):
+            # 各グリッドの現在位置から画像インデックスを取得
+            grid_array = self.grid_indices[i]
+            position = self.grid_positions[i] % len(grid_array)
+            actual_image_index = grid_array[position]
+            indices.append(actual_image_index)
+        
+        return indices
+
+    def update_window_title(self):
+        """ウィンドウタイトルを更新"""
+        if self.images:
+            folder_name = os.path.basename(os.path.dirname(self.images[self.current_image_index]))
+            order_type, is_ascending = self.sort_order
+            order_type_str = {
+                'random': 'ランダム',
+                'date_modified': '変更日順',
+                'date_added': '追加日順',
+                'date_created': '作成日順',
+                'name': '名前順'
+            }.get(order_type, '不明な順番')
+            order_direction = '昇順' if is_ascending else '降順'
+            
+            mode_str = "シングル" if self.display_mode == 'single' else "4分割"
+            
+            self.setWindowTitle(f"KabaViewer - {folder_name} - {self.current_image_index + 1}/{len(self.images)} - {order_type_str} ({order_direction}) - {mode_str}モード")
+
+    def grid_label_clicked(self, grid_index):
+        """グリッド内の画像がクリックされた時の処理（トグル動作）"""
+        if 0 <= grid_index < 4:
+            # 既に選択されているグリッドをクリックした場合は選択解除
+            if self.selected_grid == grid_index:
+                self.selected_grid = -1  # 選択解除
+                self.show_message("グリッド選択を解除")
+            else:
+                # 新しいグリッドを選択
+                self.selected_grid = grid_index
+                
+                # そのグリッドの現在の画像を全体の選択として設定
+                indices = self.calculate_grid_indices()
+                if indices and 0 <= indices[grid_index] < len(self.images):
+                    self.current_image_index = indices[grid_index]
+                
+                self.show_message(f"グリッド {grid_index + 1} を選択")
+            
+            self.show_image()  # 表示を更新（選択状態の境界線も更新）
+
+    def toggle_display_mode(self):
+        """表示モードを切り替える（シングル ⇔ 4分割）"""
+        if self.display_mode == 'single':
+            self.display_mode = 'grid'
+            self.single_label.setVisible(False)
+            self.grid_widget.setVisible(True)
+        else:
+            self.display_mode = 'single'
+            self.single_label.setVisible(True)
+            self.grid_widget.setVisible(False)
+        
+        self.show_image()  # 新しいモードで表示更新
+        self.show_message(f"{'4分割' if self.display_mode == 'grid' else 'シングル'}モードに切り替え")
+
+    def set_display_mode(self, mode):
+        """表示モードを指定のモードに設定"""
+        if mode != self.display_mode:
+            self.display_mode = mode
+            if mode == 'single':
+                self.single_label.setVisible(True)
+                self.grid_widget.setVisible(False)
+            else:
+                self.single_label.setVisible(False)
+                self.grid_widget.setVisible(True)
+            
+            # メニューバーのチェック状態を更新
+            if hasattr(self, 'single_display_action') and hasattr(self, 'grid_display_action'):
+                self.single_display_action.setChecked(mode == 'single')
+                self.grid_display_action.setChecked(mode == 'grid')
+            
+            self.show_image()
+            self.show_message(f"{'4分割' if mode == 'grid' else 'シングル'}モードに切り替え")
+
     def next_image(self):
-        self.current_image_index = (self.current_image_index + 1) % len(self.images)
+        if self.display_mode == 'single':
+            # シングルモードでは従来通り
+            self.current_image_index = (self.current_image_index + 1) % len(self.images)
+        else:
+            # グリッドモードでは4つのグリッドが独立して次へ進む
+            for i in range(4):
+                if self.grid_indices[i]:
+                    self.grid_positions[i] = (self.grid_positions[i] + 1) % len(self.grid_indices[i])
+        
         self.show_image()
 
     def previous_image(self):
-        self.current_image_index = (self.current_image_index - 1) % len(self.images)
+        if self.display_mode == 'single':
+            # シングルモードでは従来通り
+            self.current_image_index = (self.current_image_index - 1) % len(self.images)
+        else:
+            # グリッドモードでは4つのグリッドが独立して前へ戻る
+            for i in range(4):
+                if self.grid_indices[i]:
+                    self.grid_positions[i] = (self.grid_positions[i] - 1) % len(self.grid_indices[i])
+        
         self.show_image()
 
     def keyPressEvent(self, event):
@@ -292,6 +505,17 @@ class ImageViewer(QMainWindow):
             self.next_image()
         elif event.key() == Qt.Key_Left:
             self.previous_image()
+        elif event.key() == Qt.Key_G:
+            # Gキーで表示モード切り替え
+            self.toggle_display_mode()
+        elif event.key() == Qt.Key_Tab:
+            # Tabキーで表示モード切り替え
+            self.toggle_display_mode()
+        elif event.key() == Qt.Key_R:
+            # Rキーで独立グリッドを再シャッフル
+            if self.display_mode == 'grid':
+                self.shuffle_grid_system()
+                self.show_message("グリッドを再シャッフルしました")
 
     def start_slideshow(self):
         self.timer.start((self.combo_box.currentIndex() + 1) * 1000)  # コンボボックスの値を秒単位に変換
@@ -377,6 +601,27 @@ class ImageViewer(QMainWindow):
                 action.triggered.connect(lambda checked, index=i - 1: self.set_slideshow_speed(index))
                 self.speed_actions.append(action)
 
+            # 表示モード切り替えメニューを追加
+            display_menu = context_menu.addMenu("表示モード")
+            single_action = display_menu.addAction("シングル表示")
+            grid_action = display_menu.addAction("4分割表示")
+            
+            # 現在のモードにチェックを入れる
+            single_action.setCheckable(True)
+            grid_action.setCheckable(True)
+            if self.display_mode == 'single':
+                single_action.setChecked(True)
+            else:
+                grid_action.setChecked(True)
+            
+            single_action.triggered.connect(lambda: self.set_display_mode('single'))
+            grid_action.triggered.connect(lambda: self.set_display_mode('grid'))
+
+            # 4分割モードの時のみシャッフル機能を追加
+            if self.display_mode == 'grid':
+                shuffle_action = context_menu.addAction("グリッドを再シャッフル")
+                shuffle_action.triggered.connect(self.shuffle_grid_system)
+
             # 区切り線を追加
             context_menu.addSeparator()
 
@@ -444,6 +689,21 @@ class ImageViewer(QMainWindow):
         # 初期状態はランダムのみにチェックをつける
         self.set_sort_order(('random', True))
 
+        # 表示モードのサブメニューを追加
+        display_mode_menu = show_menu.addMenu('表示モード')
+        
+        single_display_action = display_mode_menu.addAction('シングル表示')
+        single_display_action.setCheckable(True)
+        single_display_action.setChecked(True)  # 初期状態はシングル表示
+        single_display_action.triggered.connect(lambda: self.set_display_mode('single'))
+        
+        grid_display_action = display_mode_menu.addAction('4分割表示')
+        grid_display_action.setCheckable(True)
+        grid_display_action.triggered.connect(lambda: self.set_display_mode('grid'))
+        
+        # 表示モードアクションをインスタンス変数として保存（状態管理用）
+        self.single_display_action = single_display_action
+        self.grid_display_action = grid_display_action
 
         # "スライド" サブメニューを作成
         slide_menu = show_menu.addMenu('スライド')
@@ -513,10 +773,19 @@ class ImageViewer(QMainWindow):
                 if self.images:
                     # 画像リストが残っている場合は次の画像を表示
                     self.current_image_index %= len(self.images)
+                    # グリッドシステムを再初期化（削除された画像を反映）
+                    self.initialize_grid_system()
                     self.show_image()
                 else:
                     # 画像リストが空になった場合はラベルをクリア
-                    self.label.clear()
+                    self.single_label.clear()
+                    # グリッドラベルもクリア
+                    for label in self.grid_labels:
+                        label.clear()
+                        label.setText("画像なし")
+                        label.setStyleSheet("border: 1px solid gray;")
+                    
+                    self.selected_grid = -1  # 選択状態をリセット
                     QMessageBox.information(self, '情報', 'すべての画像が削除されました。')
             except Exception as e:
                 QMessageBox.warning(self, 'エラー', f'画像を削除できませんでした: {e}')
