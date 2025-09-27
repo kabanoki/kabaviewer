@@ -787,10 +787,16 @@ class ImageViewer(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle("KabaViewer")
-        self.setGeometry(100, 100, 800, 600)
-
+        
         # 設定を保存するためのQSettingsオブジェクト
         self.settings = QSettings("MyCompany", "ImageViewerApp")
+        
+        # 保存されたウィンドウサイズと位置を復元（デフォルト: 800x600, 位置100,100）
+        saved_geometry = self.settings.value("window_geometry")
+        if saved_geometry:
+            self.restoreGeometry(saved_geometry)
+        else:
+            self.setGeometry(100, 100, 800, 600)
 
         # 保存されたスライドショーの速度を読み込む（デフォルトは3秒）
         last_speed = self.settings.value("slideshow_speed", 3, int)
@@ -2243,6 +2249,35 @@ class ImageViewer(QMainWindow):
     def resizeEvent(self, event):
         self.update_message_font_size()
         super().resizeEvent(event)
+        # ウィンドウサイズ変更時にジオメトリを保存（タイマーで少し遅延）
+        if hasattr(self, 'geometry_timer'):
+            self.geometry_timer.stop()
+        self.geometry_timer = QTimer()
+        self.geometry_timer.setSingleShot(True)
+        self.geometry_timer.timeout.connect(self.save_window_geometry)
+        self.geometry_timer.start(500)  # 500ms後に保存
+    
+    def moveEvent(self, event):
+        """ウィンドウ移動時の処理"""
+        super().moveEvent(event)
+        # ウィンドウ位置変更時にジオメトリを保存（タイマーで少し遅延）
+        if hasattr(self, 'geometry_timer'):
+            self.geometry_timer.stop()
+        self.geometry_timer = QTimer()
+        self.geometry_timer.setSingleShot(True)
+        self.geometry_timer.timeout.connect(self.save_window_geometry)
+        self.geometry_timer.start(500)  # 500ms後に保存
+    
+    def save_window_geometry(self):
+        """ウィンドウのジオメトリ（サイズと位置）を設定に保存"""
+        self.settings.setValue("window_geometry", self.saveGeometry())
+    
+    def closeEvent(self, event):
+        """アプリケーション終了時にウィンドウサイズと位置を保存"""
+        # 最終的なウィンドウのジオメトリを保存
+        self.save_window_geometry()
+        # 親クラスのcloseEventを呼び出す
+        super().closeEvent(event)
 
     def show_message(self, message, duration=500):
         self.message_label.setText(message)
