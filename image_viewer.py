@@ -1,12 +1,775 @@
 # back
 import os
 import random
-from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout
-from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont
+from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication
+from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon
 from PyQt5.QtCore import Qt, QTimer, QSettings
 from PIL import Image
+from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
 from favorite import FavoriteTab
+
+class ExifInfoDialog(QDialog):
+    """画像メタデータを美しく表示するダイアログ"""
+    def __init__(self, exif_data, image_path, parent=None):
+        super().__init__(parent)
+        self.exif_data = exif_data
+        self.image_path = image_path
+        self.parsed_prompt_data = self.parse_prompt_data()
+        self.init_ui()
+    
+    def parse_prompt_data(self):
+        """AI生成画像のプロンプトデータを解析して構造化"""
+        parsed_data = {
+            'prompt': '',
+            'negative_prompt': '',
+            'hire_prompt': '',
+            'parameters': {},
+            'tags': [],
+            'has_ai_data': False
+        }
+        
+        # AI生成画像のプロンプト情報を探す
+        ai_prompt_text = ''
+        for key, value in self.exif_data.items():
+            if str(key).startswith('AI_') and isinstance(value, str):
+                ai_prompt_text = value
+                parsed_data['has_ai_data'] = True
+                break
+        
+        if not ai_prompt_text:
+            return parsed_data
+            
+        # プロンプトテキストを解析
+        lines = ai_prompt_text.split('\n')
+        current_section = 'prompt'
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # ネガティブプロンプト検出
+            if line.lower().startswith('negative prompt:'):
+                current_section = 'negative'
+                negative_content = line[len('negative prompt:'):].strip()
+                if negative_content:
+                    parsed_data['negative_prompt'] = negative_content
+                continue
+            
+            # Hiresプロンプト検出（"s"付きに修正）
+            if line.lower().startswith('hires prompt:'):
+                current_section = 'hire'
+                hire_content = line[len('hires prompt:'):].strip()
+                if hire_content:
+                    parsed_data['hire_prompt'] = hire_content
+                continue
+            
+            # パラメータ行検出 (Steps:, Sampler:, CFG scale: 等)
+            # プロンプト内の重み付け要素を除外するための厳密な判定
+            
+            # 括弧で囲まれた重み付け要素を除外（例: "(masterpiece:1.2)", "(straddling:1.5),"）
+            is_weight_element = (line.strip().startswith('(') and 
+                               (':' in line and 
+                                (line.strip().endswith(')') or line.strip().endswith('),'))))
+            
+            # 単純な重み付け要素パターンも除外（コロンの前後が短い単語の場合）
+            is_simple_weight = False
+            if ':' in line and not is_weight_element:
+                parts = line.strip().split(':')
+                if len(parts) == 2:
+                    key_part = parts[0].strip().strip('(').strip()
+                    value_part = parts[1].strip().strip(')').strip(',').strip()
+                    # キー部分が短く、値部分が数値っぽい場合は重み付け要素の可能性
+                    if (len(key_part.split()) <= 3 and 
+                        (value_part.replace('.', '').isdigit() or 
+                         value_part in ['1', '2', '3', '4', '5', '0.5', '0.7', '0.8', '0.9', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '2.0'])):
+                        is_simple_weight = True
+            
+            # 実際のパラメータ行かどうかの判定
+            is_actual_param_line = (':' in line and 
+                                  not is_weight_element and 
+                                  not is_simple_weight and
+                                  any(param in line.lower() for param in [
+                                      'steps:', 'sampler:', 'cfg scale:', 'seed:', 'size:', 
+                                      'model:', 'denoising strength:', 'clip skip:', 
+                                      'hires upscale:', 'hires steps:', 'vae:', 'lora hashes:',
+                                      'schedule type:', 'vae hash:', 'emphasis:', 'version:'
+                                  ]))
+            
+            if is_actual_param_line:
+                current_section = 'parameters'
+                
+                # Hires promptが含まれている場合は抽出
+                if 'hires prompt:' in line.lower():
+                    # Hires promptを抽出する
+                    hires_start = line.lower().find('hires prompt:')
+                    if hires_start != -1:
+                        # Hires prompt: の後を取得
+                        hires_part = line[hires_start + len('hires prompt:'):].strip()
+                        # クォートで囲まれている場合は中身を抽出
+                        if hires_part.startswith('"') and '",' in hires_part:
+                            end_quote = hires_part.find('",')
+                            if end_quote != -1:
+                                hires_content = hires_part[1:end_quote]  # 最初の" と最後の", を除去
+                                # \n を実際の改行に変換
+                                hires_content = hires_content.replace('\\n', '\n')
+                                parsed_data['hire_prompt'] = hires_content
+                
+                # パラメータを分割して解析（Hires promptの内容を除外）
+                # まずHires promptの内容をマスクして、パラメータ解析から除外
+                line_for_params = line
+                if 'hires prompt:' in line.lower():
+                    # Hires promptの内容（クォートで囲まれた部分）を除外
+                    hires_start = line.lower().find('hires prompt:')
+                    if hires_start != -1:
+                        after_hires = line[hires_start:]
+                        if '"' in after_hires:
+                            quote_start = after_hires.find('"')
+                            remaining = after_hires[quote_start + 1:]
+                            if '",' in remaining:
+                                quote_end = remaining.find('",')
+                                # Hires prompt部分を除外した行を作成
+                                before_hires = line[:hires_start]
+                                after_quote = remaining[quote_end + 2:]
+                                line_for_params = before_hires + "Hires prompt: [EXCLUDED]" + after_quote
+                
+                params = line_for_params.split(',')
+                for param in params:
+                    param = param.strip()
+                    # より厳密なパラメータ判定
+                    if (':' in param and 
+                        not param.lower().startswith('hires prompt') and
+                        not param.startswith('\\n') and  # 改行文字で始まるものを除外
+                        not '\\n' in param and  # 改行文字を含むものを除外
+                        not param.startswith('(') and  # 括弧で始まるものを除外
+                        'EXCLUDED' not in param):  # 除外マークされたものを除外
+                        try:
+                            key, value = param.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            # 有効なパラメータキーかチェック
+                            valid_keys = ['steps', 'sampler', 'schedule type', 'cfg scale', 'seed', 'size', 
+                                        'model hash', 'model', 'vae hash', 'vae', 'denoising strength', 
+                                        'clip skip', 'hires upscale', 'hires steps', 'hires upscaler', 
+                                        'lora hashes', 'emphasis', 'version']
+                            if key.lower() in valid_keys:
+                                parsed_data['parameters'][key] = value
+                        except ValueError:
+                            pass  # 分割に失敗した場合はスキップ
+                continue
+            
+            # 通常のプロンプト内容
+            # プロンプト関連セクションでは、重み付け要素や単語をパラメータとして誤認識しないよう注意
+            if current_section == 'prompt':
+                # 括弧で囲まれた重み付け要素や通常のプロンプト要素をプロンプトに追加
+                if parsed_data['prompt']:
+                    parsed_data['prompt'] += ' ' + line
+                else:
+                    parsed_data['prompt'] = line
+            elif current_section == 'negative':
+                # ネガティブプロンプト内の要素
+                if parsed_data['negative_prompt']:
+                    parsed_data['negative_prompt'] += ' ' + line
+                else:
+                    parsed_data['negative_prompt'] = line
+            elif current_section == 'hire':
+                # Hiresプロンプト内の要素
+                if parsed_data['hire_prompt']:
+                    parsed_data['hire_prompt'] += ' ' + line
+                else:
+                    parsed_data['hire_prompt'] = line
+        
+        # タグ推定
+        if 'txt2img' in ai_prompt_text.lower():
+            parsed_data['tags'].append('TXT2IMG')
+        if 'hires prompt:' in ai_prompt_text.lower() or 'hi-res' in ai_prompt_text.lower():
+            parsed_data['tags'].append('HI-RES')
+        if any(model in ai_prompt_text.lower() for model in ['automatic1111', 'webui']):
+            parsed_data['tags'].append('AUTOMATIC1111')
+        if 'comfyui' in ai_prompt_text.lower():
+            parsed_data['tags'].append('COMFYUI')
+        
+        return parsed_data
+    
+    def init_ui(self):
+        self.setWindowTitle(f"画像メタデータ情報 - {os.path.basename(self.image_path)}")
+        self.setGeometry(200, 200, 700, 600)  # サイズを拡大
+        
+        # メインレイアウト
+        layout = QVBoxLayout()
+        
+        # スクロール可能エリアの作成
+        scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # AI生成画像データがある場合の美しい表示
+        if self.parsed_prompt_data['has_ai_data']:
+            self.create_ai_sections(scroll_layout)
+        
+        # EXIF情報セクション
+        self.create_exif_section(scroll_layout)
+        
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # ボタン部分
+        button_layout = QHBoxLayout()
+        
+        # 全体コピーボタン
+        copy_all_button = QPushButton("📋 全体コピー")
+        copy_all_button.clicked.connect(self.copy_all_metadata)
+        copy_all_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 10px 15px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        button_layout.addWidget(copy_all_button)
+        
+        button_layout.addStretch()
+        
+        # 閉じるボタン
+        close_button = QPushButton("閉じる")
+        close_button.clicked.connect(self.close)
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 10px 15px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        button_layout.addWidget(close_button)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+        
+        # ダイアログの全体的なスタイル
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QFrame {
+                background-color: #3c3c3c;
+                border-radius: 8px;
+                margin: 5px;
+                padding: 10px;
+            }
+        """)
+    
+    def copy_all_metadata(self):
+        """全てのメタデータをクリップボードにコピー"""
+        all_text_lines = []
+        
+        # ファイル情報
+        all_text_lines.append(f"ファイル: {os.path.basename(self.image_path)}")
+        all_text_lines.append(f"パス: {self.image_path}")
+        all_text_lines.append("")
+        
+        # AI生成画像情報
+        if self.parsed_prompt_data['has_ai_data']:
+            if self.parsed_prompt_data['prompt']:
+                all_text_lines.append("=== Prompt ===")
+                all_text_lines.append(self.parsed_prompt_data['prompt'])
+                all_text_lines.append("")
+            
+            if self.parsed_prompt_data['negative_prompt']:
+                all_text_lines.append("=== Negative prompt ===")
+                all_text_lines.append(self.parsed_prompt_data['negative_prompt'])
+                all_text_lines.append("")
+            
+            if self.parsed_prompt_data['hire_prompt']:
+                all_text_lines.append("=== Hires prompt ===")
+                all_text_lines.append(self.parsed_prompt_data['hire_prompt'])
+                all_text_lines.append("")
+            
+            if self.parsed_prompt_data['parameters']:
+                all_text_lines.append("=== Parameters ===")
+                for key, value in self.parsed_prompt_data['parameters'].items():
+                    all_text_lines.append(f"{key}: {value}")
+                all_text_lines.append("")
+        
+        # EXIF情報
+        exif_info = {}
+        for key, value in self.exif_data.items():
+            if not str(key).startswith('AI_') and not str(key).startswith('Meta_'):
+                exif_info[key] = value
+        
+        if exif_info:
+            all_text_lines.append("=== EXIF Information ===")
+            for tag_id, value in exif_info.items():
+                tag_name = TAGS.get(tag_id, tag_id)
+                if isinstance(value, bytes):
+                    value_str = f"<バイナリデータ ({len(value)} bytes)>"
+                else:
+                    value_str = str(value)[:100]
+                all_text_lines.append(f"{tag_name}: {value_str}")
+        
+        # クリップボードにコピー
+        full_text = "\n".join(all_text_lines)
+        clipboard = QApplication.clipboard()
+        clipboard.setText(full_text)
+        
+        # ボタンの一時的な変更でコピー完了を示す
+        copy_button = self.sender()
+        original_text = copy_button.text()
+        copy_button.setText("✓ コピー完了")
+        QTimer.singleShot(1500, lambda: copy_button.setText(original_text))
+    
+    def create_ai_sections(self, layout):
+        """AI生成画像情報の美しいセクションを作成"""
+        # プロンプトセクション
+        if self.parsed_prompt_data['prompt']:
+            prompt_frame = self.create_collapsible_section(
+                "Prompt", 
+                self.parsed_prompt_data['prompt'],
+                self.parsed_prompt_data['tags']
+            )
+            layout.addWidget(prompt_frame)
+        
+        # ネガティブプロンプトセクション
+        if self.parsed_prompt_data['negative_prompt']:
+            negative_frame = self.create_collapsible_section(
+                "Negative prompt",
+                self.parsed_prompt_data['negative_prompt'],
+                []
+            )
+            layout.addWidget(negative_frame)
+        
+        # Hiresプロンプトセクション
+        if self.parsed_prompt_data['hire_prompt']:
+            hire_frame = self.create_collapsible_section(
+                "Hires prompt",
+                self.parsed_prompt_data['hire_prompt'],
+                []
+            )
+            layout.addWidget(hire_frame)
+        
+        # パラメータセクション
+        if self.parsed_prompt_data['parameters']:
+            param_frame = self.create_parameters_section()
+            layout.addWidget(param_frame)
+    
+    def create_collapsible_section(self, title, content, tags):
+        """折りたたみ可能なセクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 8px;
+                margin: 5px 0px;
+                padding: 0px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        
+        # ヘッダー部分
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(15, 10, 15, 10)
+        
+        # タイトル
+        title_label = QLabel(title)
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #ffffff;
+            }
+        """)
+        header_layout.addWidget(title_label)
+        
+        # タグ表示
+        for tag in tags:
+            tag_label = QLabel(tag)
+            tag_label.setStyleSheet("""
+                QLabel {
+                    background-color: #4a90e2;
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    margin-left: 10px;
+                }
+            """)
+            header_layout.addWidget(tag_label)
+        
+        header_layout.addStretch()
+        
+        # コピーボタン
+        copy_button = QPushButton("📋")
+        copy_button.setToolTip("テキストをコピー")
+        copy_button.setStyleSheet("""
+            QPushButton {
+                background-color: #555555;
+                border: none;
+                color: white;
+                padding: 6px 8px;
+                border-radius: 4px;
+                font-size: 14px;
+                margin-left: 5px;
+            }
+            QPushButton:hover {
+                background-color: #666666;
+            }
+        """)
+        
+        # Show more/less ボタン
+        self.toggle_button = QPushButton("Show more")
+        self.toggle_button.setStyleSheet("""
+            QPushButton {
+                background: none;
+                border: none;
+                color: #4a90e2;
+                font-size: 12px;
+                text-decoration: underline;
+                margin-left: 10px;
+            }
+            QPushButton:hover {
+                color: #357ae8;
+            }
+        """)
+        
+        # コンテンツ部分
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(15, 0, 15, 15)
+        
+        # プロンプト内容（QTextEditを使用してテキスト選択可能にする）
+        content_text_edit = QTextEdit()
+        content_text_edit.setReadOnly(True)
+        content_text_edit.setStyleSheet("""
+            QTextEdit {
+                color: #cccccc;
+                font-size: 13px;
+                background-color: transparent;
+                border: none;
+                padding: 5px 0px;
+            }
+        """)
+        content_text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content_text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # コピー機能の実装
+        def copy_content():
+            clipboard = QApplication.clipboard()
+            clipboard.setText(content)
+            # 一時的にボタンテキストを変更してコピー完了を示す
+            original_text = copy_button.text()
+            copy_button.setText("✓")
+            QTimer.singleShot(1000, lambda: copy_button.setText(original_text))
+        
+        copy_button.clicked.connect(copy_content)
+        header_layout.addWidget(copy_button)
+        
+        # プロンプト系のコンテンツは全文表示、その他は長い場合のみ省略
+        is_prompt_content = "prompt" in title.lower() or "プロンプト" in title
+        
+        if not is_prompt_content and len(content) > 800:
+            # プロンプト以外で非常に長い場合のみ省略機能を提供
+            short_content = content[:800] + "..."
+            content_text_edit.setPlainText(short_content)
+            content_text_edit.full_text = content
+            content_text_edit.short_text = short_content
+            content_text_edit.is_expanded = False
+            
+            def toggle_content():
+                if content_text_edit.is_expanded:
+                    content_text_edit.setPlainText(content_text_edit.short_text)
+                    self.toggle_button.setText("Show more")
+                    content_text_edit.is_expanded = False
+                    # 高さを調整
+                    content_text_edit.setMaximumHeight(200)
+                else:
+                    content_text_edit.setPlainText(content_text_edit.full_text)
+                    self.toggle_button.setText("Show less")
+                    content_text_edit.is_expanded = True
+                    # 高さを調整
+                    content_text_edit.setMaximumHeight(16777215)  # 制限を解除
+            
+            self.toggle_button.clicked.connect(toggle_content)
+            header_layout.addWidget(self.toggle_button)
+            
+            # 初期状態では高さを制限
+            content_text_edit.setMaximumHeight(200)
+        else:
+            # プロンプト系または短いコンテンツは全文表示
+            content_text_edit.setPlainText(content)
+            # 適切な高さに自動調整（プロンプトの場合はより多くの行を許可）
+            doc_height = content_text_edit.document().size().height()
+            max_height = 400 if is_prompt_content else int(doc_height) + 40
+            content_text_edit.setMaximumHeight(max_height)
+        
+        content_layout.addWidget(content_text_edit)
+        
+        layout.addWidget(header_widget)
+        layout.addWidget(content_widget)
+        
+        return frame
+    
+    def create_parameters_section(self):
+        """パラメータセクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 8px;
+                margin: 5px 0px;
+                padding: 15px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        
+        # ヘッダー部分（タイトルとコピーボタン）
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 10)
+        
+        # タイトル
+        title_label = QLabel("Other metadata")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #ffffff;
+            }
+        """)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        # パラメータをテキストに変換してコピー用に準備
+        param_text_lines = []
+        for key, value in self.parsed_prompt_data['parameters'].items():
+            param_text_lines.append(f"{key}: {value}")
+        param_text = "\n".join(param_text_lines)
+        
+        # コピーボタン
+        copy_param_button = QPushButton("📋")
+        copy_param_button.setToolTip("パラメータをコピー")
+        copy_param_button.setStyleSheet("""
+            QPushButton {
+                background-color: #555555;
+                border: none;
+                color: white;
+                padding: 6px 8px;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #666666;
+            }
+        """)
+        
+        def copy_parameters():
+            clipboard = QApplication.clipboard()
+            clipboard.setText(param_text)
+            original_text = copy_param_button.text()
+            copy_param_button.setText("✓")
+            QTimer.singleShot(1000, lambda: copy_param_button.setText(original_text))
+        
+        copy_param_button.clicked.connect(copy_parameters)
+        header_layout.addWidget(copy_param_button)
+        
+        layout.addWidget(header_widget)
+        
+        # パラメータをグリッド形式で表示
+        grid_widget = QWidget()
+        grid_layout = QGridLayout(grid_widget)
+        grid_layout.setSpacing(10)
+        
+        row = 0
+        col = 0
+        for key, value in self.parsed_prompt_data['parameters'].items():
+            param_widget = self.create_parameter_box(key.upper(), value)
+            grid_layout.addWidget(param_widget, row, col)
+            
+            col += 1
+            if col >= 3:  # 3列で改行
+                col = 0
+                row += 1
+        
+        layout.addWidget(grid_widget)
+        return frame
+    
+    def create_parameter_box(self, key, value):
+        """個別のパラメータボックスを作成（コピー・選択機能付き）"""
+        widget = QWidget()
+        widget.setStyleSheet("""
+            QWidget {
+                background-color: #4a4a4a;
+                border-radius: 6px;
+                padding: 8px;
+                margin: 2px;
+            }
+            QWidget:hover {
+                background-color: #505050;
+                border: 1px solid #666666;
+            }
+        """)
+        
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 8)
+        layout.setSpacing(2)
+        
+        # ヘッダー部分（キーラベル + コピーボタン）
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+        
+        # キーラベル
+        key_label = QLabel(key)
+        key_label.setStyleSheet("""
+            QLabel {
+                color: #4a90e2;
+                font-size: 11px;
+                font-weight: bold;
+                margin: 0px;
+            }
+        """)
+        header_layout.addWidget(key_label)
+        header_layout.addStretch()
+        
+        # コピーボタン
+        copy_button = QPushButton("📋")
+        copy_button.setFixedSize(18, 18)
+        copy_button.setStyleSheet("""
+            QPushButton {
+                background-color: #666666;
+                border: none;
+                border-radius: 9px;
+                color: white;
+                font-size: 10px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #888888;
+            }
+            QPushButton:pressed {
+                background-color: #444444;
+            }
+        """)
+        
+        def copy_param():
+            param_text = f"{key}: {value}"
+            QApplication.clipboard().setText(param_text)
+            original_text = copy_button.text()
+            copy_button.setText("✓")
+            QTimer.singleShot(800, lambda: copy_button.setText(original_text))
+        
+        copy_button.clicked.connect(copy_param)
+        header_layout.addWidget(copy_button)
+        
+        layout.addLayout(header_layout)
+        
+        # 値表示部分（選択可能なテキスト）
+        value_text = QTextEdit()
+        value_text.setPlainText(str(value))
+        value_text.setReadOnly(True)
+        value_text.setMaximumHeight(35)
+        value_text.setMinimumHeight(25)
+        value_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        value_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        value_text.setStyleSheet("""
+            QTextEdit {
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: bold;
+                margin: 0px;
+                padding: 2px 4px;
+                border: none;
+                background: transparent;
+            }
+        """)
+        layout.addWidget(value_text)
+        
+        return widget
+    
+    def create_exif_section(self, layout):
+        """EXIF情報セクションを作成"""
+        # EXIF情報がない場合は何もしない
+        exif_info = {}
+        for key, value in self.exif_data.items():
+            if not str(key).startswith('AI_') and not str(key).startswith('Meta_'):
+                exif_info[key] = value
+        
+        if not exif_info:
+            return
+        
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 8px;
+                margin: 5px 0px;
+                padding: 15px;
+            }
+        """)
+        
+        frame_layout = QVBoxLayout(frame)
+        
+        # タイトル
+        title_label = QLabel("📷 EXIF Information")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #ffffff;
+                margin-bottom: 10px;
+            }
+        """)
+        frame_layout.addWidget(title_label)
+        
+        # EXIF情報をテキスト表示
+        exif_text = ""
+        for tag_id, value in exif_info.items():
+            tag_name = TAGS.get(tag_id, tag_id)
+            if isinstance(value, bytes):
+                value_str = f"<バイナリデータ ({len(value)} bytes)>"
+            else:
+                value_str = str(value)[:100]
+            exif_text += f"{tag_name}: {value_str}\n"
+        
+        exif_label = QLabel(exif_text)
+        exif_label.setStyleSheet("""
+            QLabel {
+                color: #cccccc;
+                font-size: 12px;
+                font-family: monospace;
+            }
+        """)
+        exif_label.setWordWrap(True)
+        frame_layout.addWidget(exif_label)
+        
+        layout.addWidget(frame)
+    
 
 class ImageViewer(QMainWindow):
     def __init__(self):
@@ -37,12 +800,16 @@ class ImageViewer(QMainWindow):
 
         # 画像表示用のタブ
         self.image_tab = QWidget()
-        self.image_layout = QVBoxLayout()
+        self.image_layout = QHBoxLayout()  # 水平レイアウトに変更
+        
+        # メイン表示エリア（画像表示部分）
+        self.main_display_widget = QWidget()
+        self.main_display_layout = QVBoxLayout(self.main_display_widget)
         
         # シングル表示用ラベル（従来のもの）
         self.single_label = QLabel(self)
         self.single_label.setAlignment(Qt.AlignCenter)
-        self.single_label.setMinimumSize(800, 600)
+        self.single_label.setMinimumSize(600, 400)  # サイドバー用にサイズ調整
         
         # 4分割表示用のグリッドレイアウトと4つのラベル
         self.grid_widget = QWidget()
@@ -66,12 +833,20 @@ class ImageViewer(QMainWindow):
         self.grid_layout.addWidget(self.grid_labels[3], 1, 1)  # 右下
         
         # 初期状態はシングル表示
-        self.image_layout.addWidget(self.single_label)
-        self.image_layout.addWidget(self.grid_widget)
-        self.image_tab.setLayout(self.image_layout)
+        self.main_display_layout.addWidget(self.single_label)
+        self.main_display_layout.addWidget(self.grid_widget)
         
         # grid_widgetは最初は非表示
         self.grid_widget.setVisible(False)
+        
+        # サイドバーの作成
+        self.create_metadata_sidebar()
+        
+        # メイン表示エリアをレイアウトに追加（サイドバーをもっと広く）
+        self.image_layout.addWidget(self.main_display_widget, 3)  # 3/5の幅を占める
+        self.image_layout.addWidget(self.sidebar_widget, 2)  # 2/5の幅を占める（以前より広い）
+        
+        self.image_tab.setLayout(self.image_layout)
 
         # メインレイアウトを作成
         self.main_layout = QVBoxLayout()
@@ -159,10 +934,608 @@ class ImageViewer(QMainWindow):
 
         # メニューの設定
         self.init_menu()
+    
+    def create_metadata_sidebar(self):
+        """メタデータ表示用のサイドバーを作成"""
+        self.sidebar_widget = QWidget()
+        self.sidebar_widget.setStyleSheet("""
+            QWidget {
+                background-color: #2b2b2b;
+                border-left: 1px solid #555555;
+            }
+        """)
+        self.sidebar_layout = QVBoxLayout(self.sidebar_widget)
+        self.sidebar_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # サイドバータイトル
+        sidebar_title = QLabel("画像メタデータ")
+        sidebar_title.setStyleSheet("""
+            QLabel {
+                color: #ffffff;
+                font-size: 16px;
+                font-weight: bold;
+                padding: 10px 0px;
+                border-bottom: 1px solid #555555;
+            }
+        """)
+        self.sidebar_layout.addWidget(sidebar_title)
+        
+        # 切り替えボタン群
+        button_layout = QHBoxLayout()
+        
+        self.sidebar_toggle_button = QPushButton("非表示")
+        self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
+        self.sidebar_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #555555;
+                color: white;
+                border: none;
+                padding: 5px 10px;
+                border-radius: 3px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #666666;
+            }
+        """)
+        button_layout.addWidget(self.sidebar_toggle_button)
+        
+        self.copy_all_sidebar_button = QPushButton("📋")
+        self.copy_all_sidebar_button.setToolTip("全体コピー")
+        self.copy_all_sidebar_button.clicked.connect(self.copy_all_metadata_sidebar)
+        self.copy_all_sidebar_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 5px 8px;
+                border-radius: 3px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        button_layout.addWidget(self.copy_all_sidebar_button)
+        
+        button_layout.addStretch()
+        self.sidebar_layout.addLayout(button_layout)
+        
+        # スクロールエリア
+        self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background-color: #3c3c3c;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #666666;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+        """)
+        
+        # サイドバー用のメタデータコンテナ
+        self.sidebar_content_widget = QWidget()
+        self.sidebar_content_layout = QVBoxLayout(self.sidebar_content_widget)
+        self.sidebar_content_layout.setContentsMargins(0, 10, 0, 0)
+        
+        # 初期メッセージ
+        self.no_data_label = QLabel("画像が選択されていません")
+        self.no_data_label.setStyleSheet("""
+            QLabel {
+                color: #999999;
+                font-style: italic;
+                text-align: center;
+                padding: 20px;
+            }
+        """)
+        self.no_data_label.setAlignment(Qt.AlignCenter)
+        self.sidebar_content_layout.addWidget(self.no_data_label)
+        
+        self.sidebar_scroll.setWidget(self.sidebar_content_widget)
+        self.sidebar_layout.addWidget(self.sidebar_scroll)
+        
+        # サイドバーの表示状態を設定から読み込み
+        # 初回起動時のみ非表示、その後は前回の状態を維持
+        self.sidebar_visible = self.settings.value("sidebar_visible", False, type=bool)
+        
+        # 保存された状態に基づいてサイドバーを設定
+        if not self.sidebar_visible:
+            self.sidebar_widget.setVisible(False)
+            self.sidebar_toggle_button.setText("表示")
+        
+        # サイドバーの最小幅を設定（より広く使いやすく）
+        self.sidebar_widget.setMinimumWidth(300)
+        self.sidebar_widget.setMaximumWidth(600)
+    
+    def toggle_sidebar(self):
+        """サイドバーの表示/非表示を切り替え"""
+        if self.sidebar_visible:
+            self.sidebar_widget.setVisible(False)
+            self.sidebar_toggle_button.setText("表示")
+            self.sidebar_visible = False
+        else:
+            self.sidebar_widget.setVisible(True)
+            self.sidebar_toggle_button.setText("非表示")
+            self.sidebar_visible = True
+        
+        # 設定を保存
+        self.settings.setValue("sidebar_visible", self.sidebar_visible)
+        
+        # メッセージを表示
+        status_text = "表示" if self.sidebar_visible else "非表示"
+        self.show_message(f"サイドバー{status_text}")
+    
+    def update_sidebar_metadata(self):
+        """現在の画像のメタデータでサイドバーを更新"""
+        if not self.images:
+            self.show_sidebar_no_data()
+            return
+        
+        current_image_path = self.images[self.current_image_index]
+        metadata = self.get_exif_data(current_image_path)
+        
+        # ExifInfoDialogと同じ解析ロジックを使用
+        exif_dialog = ExifInfoDialog(metadata, current_image_path, self)
+        parsed_data = exif_dialog.parsed_prompt_data
+        
+        self.populate_sidebar_content(parsed_data, metadata, current_image_path)
+    
+    def show_sidebar_no_data(self):
+        """サイドバーにデータなしメッセージを表示"""
+        # 既存のコンテンツをクリア
+        self.clear_sidebar_content()
+        
+        self.no_data_label.setText("画像が選択されていません")
+        self.no_data_label.setVisible(True)
+    
+    def clear_sidebar_content(self):
+        """サイドバーの既存コンテンツをクリア"""
+        # 既存のウィジェットを全て削除
+        for i in reversed(range(self.sidebar_content_layout.count())):
+            child = self.sidebar_content_layout.itemAt(i).widget()
+            if child:
+                child.setParent(None)
+    
+    def copy_all_metadata_sidebar(self):
+        """サイドバー版の全体コピー機能"""
+        if not self.images:
+            return
+            
+        current_image_path = self.images[self.current_image_index]
+        metadata = self.get_exif_data(current_image_path)
+        
+        # ExifInfoDialogのcopy_all_metadataメソッドと同じロジックを使用
+        exif_dialog = ExifInfoDialog(metadata, current_image_path, self)
+        exif_dialog.copy_all_metadata()
+        
+        # ボタンの一時的な変更でコピー完了を示す
+        original_text = self.copy_all_sidebar_button.text()
+        self.copy_all_sidebar_button.setText("✓")
+        QTimer.singleShot(1000, lambda: self.copy_all_sidebar_button.setText(original_text))
+    
+    def populate_sidebar_content(self, parsed_data, metadata, image_path):
+        """サイドバーにメタデータコンテンツを表示"""
+        # 既存のコンテンツをクリア
+        self.clear_sidebar_content()
+        
+        # ファイル名表示
+        filename_label = QLabel(f"📁 {os.path.basename(image_path)}")
+        filename_label.setStyleSheet("""
+            QLabel {
+                color: #ffffff;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 8px 0px;
+                border-bottom: 1px solid #444444;
+            }
+        """)
+        filename_label.setWordWrap(True)
+        self.sidebar_content_layout.addWidget(filename_label)
+        
+        # AI生成画像データがある場合
+        if parsed_data['has_ai_data']:
+            # プロンプトセクション
+            if parsed_data['prompt']:
+                prompt_section = self.create_sidebar_section(
+                    "Prompt", 
+                    parsed_data['prompt'], 
+                    parsed_data['tags']
+                )
+                self.sidebar_content_layout.addWidget(prompt_section)
+            
+            # ネガティブプロンプトセクション
+            if parsed_data['negative_prompt']:
+                negative_section = self.create_sidebar_section(
+                    "Negative prompt",
+                    parsed_data['negative_prompt'],
+                    []
+                )
+                self.sidebar_content_layout.addWidget(negative_section)
+            
+            # Hiresプロンプトセクション
+            if parsed_data['hire_prompt']:
+                hire_section = self.create_sidebar_section(
+                    "Hires prompt",
+                    parsed_data['hire_prompt'],
+                    []
+                )
+                self.sidebar_content_layout.addWidget(hire_section)
+            
+            # パラメータセクション
+            if parsed_data['parameters']:
+                param_section = self.create_sidebar_parameters_section(parsed_data['parameters'])
+                self.sidebar_content_layout.addWidget(param_section)
+        
+        # EXIF情報セクション
+        exif_info = {}
+        for key, value in metadata.items():
+            if not str(key).startswith('AI_') and not str(key).startswith('Meta_'):
+                exif_info[key] = value
+        
+        if exif_info:
+            exif_section = self.create_sidebar_exif_section(exif_info)
+            self.sidebar_content_layout.addWidget(exif_section)
+        
+        # データがない場合
+        if not parsed_data['has_ai_data'] and not exif_info:
+            no_metadata_label = QLabel("メタデータが見つかりません")
+            no_metadata_label.setStyleSheet("""
+                QLabel {
+                    color: #999999;
+                    font-style: italic;
+                    text-align: center;
+                    padding: 20px;
+                }
+            """)
+            no_metadata_label.setAlignment(Qt.AlignCenter)
+            self.sidebar_content_layout.addWidget(no_metadata_label)
+        
+        # スペーサーを追加
+        self.sidebar_content_layout.addStretch()
+    
+    def create_sidebar_section(self, title, content, tags):
+        """サイドバー用のセクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 6px;
+                margin: 5px 0px;
+                padding: 8px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 8, 8, 8)
+        
+        # ヘッダー部分
+        header_layout = QHBoxLayout()
+        
+        title_label = QLabel(title)
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                font-weight: bold;
+                color: #ffffff;
+                margin-bottom: 5px;
+            }
+        """)
+        header_layout.addWidget(title_label)
+        
+        # タグ表示
+        for tag in tags:
+            tag_label = QLabel(tag)
+            tag_label.setStyleSheet("""
+                QLabel {
+                    background-color: #4a90e2;
+                    color: white;
+                    padding: 2px 6px;
+                    border-radius: 8px;
+                    font-size: 9px;
+                    margin-left: 5px;
+                }
+            """)
+            header_layout.addWidget(tag_label)
+        
+        header_layout.addStretch()
+        
+        # コピーボタン
+        copy_btn = QPushButton("📋")
+        copy_btn.setToolTip("コピー")
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #555555;
+                border: none;
+                color: white;
+                padding: 3px 6px;
+                border-radius: 3px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #666666;
+            }
+        """)
+        
+        def copy_section_content():
+            clipboard = QApplication.clipboard()
+            clipboard.setText(content)
+            original_text = copy_btn.text()
+            copy_btn.setText("✓")
+            QTimer.singleShot(800, lambda: copy_btn.setText(original_text))
+        
+        copy_btn.clicked.connect(copy_section_content)
+        header_layout.addWidget(copy_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # コンテンツ部分（サイドバー用は常に短縮表示）
+        content_text = QTextEdit()
+        content_text.setReadOnly(True)
+        content_text.setStyleSheet("""
+            QTextEdit {
+                color: #cccccc;
+                font-size: 11px;
+                background-color: transparent;
+                border: none;
+                padding: 2px;
+            }
+        """)
+        content_text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        content_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # プロンプト系のコンテンツは全文表示
+        is_prompt_content = "prompt" in title.lower() or "プロンプト" in title
+        
+        if is_prompt_content:
+            # プロンプト系は全文表示
+            display_content = content
+        else:
+            # その他のコンテンツは800文字まで表示
+            display_content = content[:800] + "..." if len(content) > 800 else content
+            
+        content_text.setPlainText(display_content)
+        
+        # プロンプト系の場合は高さ制限を大幅に緩和、その他は制限を維持
+        max_height = 400 if is_prompt_content else 200
+        content_text.setMaximumHeight(max_height)
+        
+        layout.addWidget(content_text)
+        
+        return frame
+    
+    def create_sidebar_parameter_item(self, key, value):
+        """サイドバー用の個別パラメータアイテムを作成（コピー・選択機能付き）"""
+        widget = QWidget()
+        widget.setStyleSheet("""
+            QWidget {
+                background-color: #464646;
+                border-radius: 4px;
+                padding: 4px;
+                margin: 1px;
+            }
+            QWidget:hover {
+                background-color: #525252;
+                border: 1px solid #666666;
+            }
+        """)
+        
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(8)
+        
+        # キーラベル
+        key_label = QLabel(f"{key}:")
+        key_label.setStyleSheet("""
+            QLabel {
+                color: #4a90e2;
+                font-size: 10px;
+                font-weight: bold;
+                min-width: 50px;
+            }
+        """)
+        layout.addWidget(key_label)
+        
+        # 値テキスト（選択可能）
+        value_text = QTextEdit()
+        value_text.setPlainText(str(value))
+        value_text.setReadOnly(True)
+        value_text.setMaximumHeight(20)
+        value_text.setMinimumHeight(20)
+        value_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        value_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        value_text.setStyleSheet("""
+            QTextEdit {
+                color: #ffffff;
+                font-size: 10px;
+                border: none;
+                background: transparent;
+                padding: 0px;
+                margin: 0px;
+            }
+        """)
+        layout.addWidget(value_text)
+        layout.addStretch()
+        
+        # コピーボタン
+        copy_button = QPushButton("📋")
+        copy_button.setFixedSize(14, 14)
+        copy_button.setStyleSheet("""
+            QPushButton {
+                background-color: #666666;
+                border: none;
+                border-radius: 7px;
+                color: white;
+                font-size: 8px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #888888;
+            }
+            QPushButton:pressed {
+                background-color: #444444;
+            }
+        """)
+        
+        def copy_param():
+            param_text = f"{key}: {value}"
+            QApplication.clipboard().setText(param_text)
+            original_text = copy_button.text()
+            copy_button.setText("✓")
+            QTimer.singleShot(600, lambda: copy_button.setText(original_text))
+        
+        copy_button.clicked.connect(copy_param)
+        layout.addWidget(copy_button)
+        
+        return widget
+    
+    def create_sidebar_parameters_section(self, parameters):
+        """サイドバー用のパラメータセクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 6px;
+                margin: 5px 0px;
+                padding: 8px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 8, 8, 8)
+        
+        # ヘッダー
+        header_layout = QHBoxLayout()
+        title_label = QLabel("Parameters")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                font-weight: bold;
+                color: #ffffff;
+                margin-bottom: 5px;
+            }
+        """)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        # コピーボタン
+        copy_btn = QPushButton("📋")
+        copy_btn.setToolTip("パラメータをコピー")
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #555555;
+                border: none;
+                color: white;
+                padding: 3px 6px;
+                border-radius: 3px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #666666;
+            }
+        """)
+        
+        param_text_lines = [f"{key}: {value}" for key, value in parameters.items()]
+        param_text = "\n".join(param_text_lines)
+        
+        def copy_params():
+            clipboard = QApplication.clipboard()
+            clipboard.setText(param_text)
+            original_text = copy_btn.text()
+            copy_btn.setText("✓")
+            QTimer.singleShot(800, lambda: copy_btn.setText(original_text))
+        
+        copy_btn.clicked.connect(copy_params)
+        header_layout.addWidget(copy_btn)
+        layout.addLayout(header_layout)
+        
+        # パラメータを縦並びで表示（個別コピー・選択機能付き）
+        for key, value in parameters.items():
+            param_item = self.create_sidebar_parameter_item(key.upper(), value)
+            layout.addWidget(param_item)
+        
+        return frame
+    
+    def create_sidebar_exif_section(self, exif_info):
+        """サイドバー用のEXIF情報セクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 6px;
+                margin: 5px 0px;
+                padding: 8px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 8, 8, 8)
+        
+        title_label = QLabel("📷 EXIF Info")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                font-weight: bold;
+                color: #ffffff;
+                margin-bottom: 5px;
+            }
+        """)
+        layout.addWidget(title_label)
+        
+        # EXIF情報をテキストで表示
+        exif_text_lines = []
+        for tag_id, value in exif_info.items():
+            tag_name = TAGS.get(tag_id, tag_id)
+            if isinstance(value, bytes):
+                value_str = f"<バイナリ ({len(value)}B)>"
+            else:
+                value_str = str(value)[:50]  # サイドバー用に短縮
+            exif_text_lines.append(f"{tag_name}: {value_str}")
+        
+        exif_text_edit = QTextEdit()
+        exif_text_edit.setReadOnly(True)
+        exif_text_edit.setPlainText("\n".join(exif_text_lines))
+        exif_text_edit.setStyleSheet("""
+            QTextEdit {
+                color: #cccccc;
+                font-size: 9px;
+                font-family: monospace;
+                background-color: transparent;
+                border: none;
+            }
+        """)
+        exif_text_edit.setMaximumHeight(150)  # サイドバーが広くなったので高さを増やす
+        exif_text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        layout.addWidget(exif_text_edit)
+        
+        return frame
 
     # クリックでスライドショーをトグルするメソッドを追加（ビューアータブ選択時のみ）
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.tabs.currentWidget() == self.image_tab:
+            # サイドバー内でのクリックかどうかを確認
+            if self.sidebar_widget.isVisible():
+                sidebar_geometry = self.sidebar_widget.geometry()
+                click_pos = event.pos()
+                
+                # クリック位置がサイドバー内の場合はスライドショーを開始しない
+                if sidebar_geometry.contains(click_pos):
+                    return
+            
             self.toggle_slideshow()
 
     def toggle_slideshow(self):
@@ -279,6 +1652,9 @@ class ImageViewer(QMainWindow):
             self.show_image_single()
         else:
             self.show_image_grid()
+        
+        # サイドバーのメタデータも更新
+        self.update_sidebar_metadata()
 
     def initialize_grid_system(self):
         """4つの独立したランダムグリッドシステムを初期化"""
@@ -516,6 +1892,14 @@ class ImageViewer(QMainWindow):
             if self.display_mode == 'grid':
                 self.shuffle_grid_system()
                 self.show_message("グリッドを再シャッフルしました")
+        elif event.key() == Qt.Key_E:
+            # Eキーで画像メタデータ情報表示
+            if self.tabs.currentWidget() == self.image_tab:
+                self.show_exif_info()
+        elif event.key() == Qt.Key_S:
+            # Sキーでサイドバー切り替え
+            if self.tabs.currentWidget() == self.image_tab:
+                self.toggle_sidebar()
 
     def start_slideshow(self):
         self.timer.start((self.combo_box.currentIndex() + 1) * 1000)  # コンボボックスの値を秒単位に変換
@@ -625,6 +2009,13 @@ class ImageViewer(QMainWindow):
             # 区切り線を追加
             context_menu.addSeparator()
 
+            # メタデータ情報表示メニューを追加
+            exif_action = context_menu.addAction("画像メタデータを表示 (E)")
+            exif_action.triggered.connect(self.show_exif_info)
+
+            # 区切り線を追加
+            context_menu.addSeparator()
+
             # 画像を削除メニューを追加
             delete_action = context_menu.addAction("画像を削除")
             delete_action.triggered.connect(self.delete_current_image)
@@ -655,6 +2046,17 @@ class ImageViewer(QMainWindow):
 
         # [表示]メニュー
         show_menu = menubar.addMenu('表示')
+
+        # メタデータ情報表示アクション
+        exif_action = show_menu.addAction('画像メタデータを表示 (E)')
+        exif_action.triggered.connect(self.show_exif_info)
+        
+        # サイドバー切り替えアクション
+        sidebar_action = show_menu.addAction('サイドバー切り替え (S)')
+        sidebar_action.triggered.connect(self.toggle_sidebar)
+
+        # 区切り線
+        show_menu.addSeparator()
 
         # 並び順のサブメニューを追加
         order_menu = show_menu.addMenu('並び順')
@@ -857,3 +2259,129 @@ class ImageViewer(QMainWindow):
 
     def hide_message(self):
         self.message_label.hide()
+    
+    def get_exif_data(self, image_path):
+        """画像ファイルからEXIF情報とAI生成画像のメタデータを取得"""
+        try:
+            with Image.open(image_path) as img:
+                # 標準的なEXIF情報を取得
+                exif_data = img._getexif() if hasattr(img, '_getexif') and img._getexif() else {}
+                
+                # AI生成画像のメタデータも取得（PNG chunks, JPEG comments等）
+                ai_metadata = {}
+                
+                # PIL.Image.infoから全ての情報を取得（PNG chunks等を含む）
+                if hasattr(img, 'info') and img.info:
+                    for key, value in img.info.items():
+                        # Stable Diffusionでよく使われるキー
+                        if key.lower() in ['parameters', 'prompt', 'negative_prompt', 'steps', 'sampler', 
+                                         'cfg_scale', 'seed', 'model', 'software', 'comment', 'description',
+                                         'workflow', 'comfyui', 'automatic1111']:
+                            ai_metadata[f"AI_{key}"] = value
+                        # その他の興味深い情報
+                        elif isinstance(value, (str, int, float)) and len(str(value)) < 10000:
+                            ai_metadata[f"Meta_{key}"] = value
+                
+                # EXIFのUserCommentを特別処理（AI生成画像のプロンプトが含まれることが多い）
+                if exif_data and 37510 in exif_data:  # 37510 = UserComment
+                    user_comment_raw = exif_data[37510]
+                    if isinstance(user_comment_raw, bytes):
+                        try:
+                            decoded_comment = None
+                            
+                            # 複数のデコード方法を試行
+                            decode_attempts = [
+                                # 方法1: 標準的なEXIF UserComment形式（先頭8バイトがエンコーディング）
+                                lambda data: data[8:].decode('ascii', errors='ignore') if data.startswith(b'ASCII\x00\x00\x00') else None,
+                                # UNICODE形式を正しく処理（UTF-16BEでデコード）
+                                lambda data: data[8:].decode('utf-16be', errors='ignore').rstrip('\x00') if data.startswith(b'UNICODE\x00') else None,
+                                
+                                # 方法2: UTF-16 (Little Endian / Big Endian)
+                                lambda data: data.decode('utf-16le', errors='ignore'),
+                                lambda data: data.decode('utf-16be', errors='ignore'),
+                                
+                                # 方法3: ヌル文字ごとに区切られたUTF-16パターン
+                                lambda data: data.replace(b'\x00', b'').decode('utf-8', errors='ignore'),
+                                
+                                # 方法4: 先頭バイトをスキップしてUTF-16LE
+                                lambda data: data[8:].decode('utf-16le', errors='ignore'),
+                                lambda data: data[8:].decode('utf-16be', errors='ignore'),
+                                
+                                # 方法5: 直接UTF-8デコード
+                                lambda data: data.decode('utf-8', errors='ignore'),
+                                
+                                # 方法6: UTF-16として読み込み、BOMをスキップ
+                                lambda data: data.decode('utf-16', errors='ignore') if len(data) % 2 == 0 else None,
+                                
+                                # 方法7: バイト配列を2つずつ区切ってUTF-16LE処理
+                                lambda data: ''.join(chr(b + (a << 8)) for a, b in zip(data[::2], data[1::2]) if chr(b + (a << 8)).isprintable()) if len(data) % 2 == 0 else None,
+                                
+                                # 方法8: バイト配列を2つずつ区切ってUTF-16BE処理  
+                                lambda data: ''.join(chr(a + (b << 8)) for a, b in zip(data[::2], data[1::2]) if chr(a + (b << 8)).isprintable()) if len(data) % 2 == 0 else None,
+                                
+                                # 方法9: Latin-1でデコード
+                                lambda data: data.decode('latin-1', errors='ignore'),
+                                
+                                # 方法10: 制御文字をスキップしてUTF-8
+                                lambda data: data.lstrip(b'\x00\x01\x02\x03\x04\x05\x06\x07\x08').decode('utf-8', errors='ignore'),
+                            ]
+                            
+                            # 各方法を試行
+                            for attempt in decode_attempts:
+                                try:
+                                    result = attempt(user_comment_raw)
+                                    if result and len(result.strip()) > 10:
+                                        # 制御文字や不可視文字を除去
+                                        cleaned_result = ''.join(char for char in result if char.isprintable() or char in '\n\r\t')
+                                        if len(cleaned_result.strip()) > 10:
+                                            decoded_comment = cleaned_result.strip()
+                                            break
+                                except:
+                                    continue
+                            
+                            # デコードできた場合は AI情報として追加
+                            if decoded_comment:
+                                # プロンプトの特徴をチェック（より緩い条件）
+                                prompt_indicators = [
+                                    'best quality', 'good quality', 'amazing quality', 'masterpiece', 
+                                    'absurdres', 'very aesthetic', 'break', '1girl', 'solo',
+                                    'negative prompt', 'hires prompt', 'steps:', 'sampler:', 'cfg scale:', 'seed:', 'model:'
+                                ]
+                                
+                                # プロンプトらしい内容があるか、または十分に長いテキストの場合
+                                is_likely_prompt = (
+                                    any(indicator in decoded_comment.lower() for indicator in prompt_indicators) or
+                                    len(decoded_comment) > 50  # 50文字以上の場合はプロンプトの可能性が高い
+                                )
+                                
+                                if is_likely_prompt:
+                                    ai_metadata["AI_Prompt_from_UserComment"] = decoded_comment
+                                    # EXIFから元のバイナリデータを削除（重複を避ける）
+                                    exif_data.pop(37510, None)
+                                
+                        except Exception as e:
+                            pass  # エラーは静かに無視
+                
+                # 結合してリターン
+                combined_data = {}
+                combined_data.update(exif_data)
+                combined_data.update(ai_metadata)
+                
+                return combined_data
+                
+        except Exception as e:
+            print(f"メタデータ読み取りエラー: {e}")
+            return {}
+    
+    def show_exif_info(self):
+        """現在の画像のメタデータ情報（EXIF・AI生成画像のプロンプト等）を表示"""
+        if not self.images:
+            QMessageBox.warning(self, "エラー", "表示する画像がありません。")
+            return
+        
+        current_image_path = self.images[self.current_image_index]
+        metadata = self.get_exif_data(current_image_path)
+        
+        # メタデータ情報ダイアログを表示
+        dialog = ExifInfoDialog(metadata, current_image_path, self)
+        dialog.exec_()
