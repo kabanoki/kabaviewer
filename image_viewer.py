@@ -1922,6 +1922,10 @@ class ImageViewer(QMainWindow):
             # Sキーでサイドバー切り替え
             if self.tabs.currentWidget() == self.image_tab:
                 self.toggle_sidebar()
+        elif event.key() == Qt.Key_Delete:
+            # Deleteキーで画像を削除
+            if self.tabs.currentWidget() == self.image_tab:
+                self.delete_current_image()
 
     def start_slideshow(self):
         self.timer.start((self.combo_box.currentIndex() + 1) * 1000)  # コンボボックスの値を秒単位に変換
