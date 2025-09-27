@@ -815,7 +815,7 @@ class ImageViewer(QMainWindow):
         # シングル表示用ラベル（従来のもの）
         self.single_label = QLabel(self)
         self.single_label.setAlignment(Qt.AlignCenter)
-        self.single_label.setMinimumSize(600, 400)  # サイドバー用にサイズ調整
+        self.single_label.setMinimumSize(800, 600)  # より大きな初期サイズに変更
         
         # 4分割表示用のグリッドレイアウトと4つのラベル
         self.grid_widget = QWidget()
@@ -1693,24 +1693,40 @@ class ImageViewer(QMainWindow):
             try:
                 image = Image.open(image_path)
 
-                # ラベルのサイズに画像をフィットさせる
-                window_width, window_height = self.single_label.size().width(), self.single_label.size().height()
+                # 実際の利用可能スペースを計算（サイドバーとマージンを考慮）
+                total_width = self.width()
+                total_height = self.height()
+                
+                # サイドバーが表示されている場合はその分を差し引く
+                sidebar_width = 0
+                if self.sidebar_visible and hasattr(self, 'sidebar_widget'):
+                    sidebar_width = self.sidebar_widget.width()
+                
+                # 利用可能な画像表示スペース（マージンも考慮）
+                available_width = total_width - sidebar_width - 50  # 50pxマージン
+                available_height = total_height - 150  # タブとメニューバー分を差し引く
+                
+                # 最小サイズの保証
+                available_width = max(400, available_width)
+                available_height = max(300, available_height)
+                
                 image_ratio = image.width / image.height
-                window_ratio = window_width / window_height
+                window_ratio = available_width / available_height
 
                 if window_ratio > image_ratio:
-                    new_height = window_height
-                    new_width = int(window_height * image_ratio)
+                    new_height = available_height
+                    new_width = int(available_height * image_ratio)
                 else:
-                    new_width = window_width
-                    new_height = int(window_width / image_ratio)
+                    new_width = available_width
+                    new_height = int(available_width / image_ratio)
 
+                # 高品質リサイズ
                 image = image.resize((new_width, new_height), Image.LANCZOS)
                 image = image.convert("RGBA")
                 pixmap = QPixmap.fromImage(QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888))
 
                 # ピクセル単位で正確に表示
-                self.single_label.setPixmap(pixmap.scaled(self.single_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.single_label.setPixmap(pixmap)
 
                 self.update_window_title()
             except Exception as e:
@@ -2249,6 +2265,17 @@ class ImageViewer(QMainWindow):
     def resizeEvent(self, event):
         self.update_message_font_size()
         super().resizeEvent(event)
+        
+        # 画像表示を更新（サイズ変更に対応）
+        if hasattr(self, 'images') and self.images and hasattr(self, 'display_mode'):
+            # 少し遅延させて画像を再表示（連続的なリサイズに対する最適化）
+            if hasattr(self, 'resize_timer'):
+                self.resize_timer.stop()
+            self.resize_timer = QTimer()
+            self.resize_timer.setSingleShot(True)
+            self.resize_timer.timeout.connect(self.show_image)
+            self.resize_timer.start(100)  # 100ms後に画像を再表示
+        
         # ウィンドウサイズ変更時にジオメトリを保存（タイマーで少し遅延）
         if hasattr(self, 'geometry_timer'):
             self.geometry_timer.stop()
