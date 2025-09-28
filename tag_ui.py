@@ -557,6 +557,291 @@ class TagTab(QWidget):
             # ビューアータブに切り替え
             self.viewer.tabs.setCurrentWidget(self.viewer.image_tab)
 
+
+class FavoritesTab(QWidget):
+    """お気に入り画像管理タブ"""
+    
+    def __init__(self, tag_manager, viewer):
+        super().__init__()
+        self.tag_manager = tag_manager
+        self.viewer = viewer
+        self.init_ui()
+    
+    def init_ui(self):
+        main_layout = QHBoxLayout(self)
+        
+        # 左側: フィルター・管理機能
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        
+        # お気に入り管理セクション
+        manage_layout = QVBoxLayout()
+        manage_layout.addWidget(QLabel("⭐ お気に入り管理"))
+        
+        # 更新ボタン
+        refresh_button = QPushButton("🔄 リストを更新")
+        refresh_button.clicked.connect(self.refresh_favorites)
+        manage_layout.addWidget(refresh_button)
+        
+        # 統計情報
+        self.stats_label = QLabel("読み込み中...")
+        self.stats_label.setStyleSheet("""
+            QLabel {
+                color: #666666;
+                font-size: 12px;
+                padding: 10px;
+                background-color: #f5f5f5;
+                border-radius: 4px;
+                margin: 5px 0px;
+            }
+        """)
+        manage_layout.addWidget(self.stats_label)
+        
+        left_layout.addLayout(manage_layout)
+        
+        # フィルターセクション
+        filter_layout = QVBoxLayout()
+        filter_layout.addWidget(QLabel("🔍 フィルター"))
+        
+        # 現在のフォルダのみ表示チェックボックス
+        self.current_folder_only = QCheckBox("現在のフォルダ内のみ表示")
+        self.current_folder_only.setChecked(True)
+        self.current_folder_only.toggled.connect(self.update_favorites_list)
+        filter_layout.addWidget(self.current_folder_only)
+        
+        left_layout.addLayout(filter_layout)
+        left_layout.addStretch()
+        
+        # 右側: お気に入り一覧と画像プレビュー
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        
+        # 上下分割用のスプリッター
+        vertical_splitter = QSplitter(Qt.Vertical)
+        
+        # 上側: お気に入り一覧
+        favorites_widget = QWidget()
+        favorites_layout = QVBoxLayout(favorites_widget)
+        favorites_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.favorites_count_label = QLabel("⭐ お気に入り画像")
+        favorites_layout.addWidget(self.favorites_count_label)
+        
+        self.favorites_list = KeyboardNavigableListWidget(self)
+        self.favorites_list.itemDoubleClicked.connect(self.open_image)
+        self.favorites_list.itemClicked.connect(self.show_image_preview)
+        favorites_layout.addWidget(self.favorites_list)
+        
+        vertical_splitter.addWidget(favorites_widget)
+        
+        # 下側: 画像プレビューエリア（タグタブと同様）
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        
+        preview_layout.addWidget(QLabel("🖼️ 画像プレビュー"))
+        
+        # 画像表示ラベル
+        self.preview_label = QLabel()
+        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 2px dashed #cccccc;
+                border-radius: 8px;
+                color: #666666;
+                font-size: 14px;
+            }
+        """)
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setText("お気に入り画像を選択してください")
+        self.preview_label.setScaledContents(False)
+        preview_layout.addWidget(self.preview_label)
+        
+        # 画像情報ラベル
+        self.image_info_label = QLabel()
+        self.image_info_label.setStyleSheet("""
+            QLabel {
+                color: #666666;
+                font-size: 11px;
+                padding: 5px;
+            }
+        """)
+        self.image_info_label.setWordWrap(True)
+        preview_layout.addWidget(self.image_info_label)
+        
+        vertical_splitter.addWidget(preview_widget)
+        
+        # スプリッターの比率を設定（上:下 = 1:1）
+        vertical_splitter.setStretchFactor(0, 1)
+        vertical_splitter.setStretchFactor(1, 1)
+        
+        right_layout.addWidget(vertical_splitter)
+        
+        # メインスプリッター
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(left_widget)
+        main_splitter.addWidget(right_widget)
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 3)
+        
+        main_layout.addWidget(main_splitter)
+        
+        # 初期データ読み込み
+        self.refresh_favorites()
+    
+    def refresh_favorites(self):
+        """お気に入り一覧を更新"""
+        try:
+            all_favorites = self.tag_manager.get_favorite_images()
+            
+            # 統計情報を更新
+            total_count = len(all_favorites)
+            existing_count = sum(1 for img_path, _, _ in all_favorites if os.path.exists(img_path))
+            missing_count = total_count - existing_count
+            
+            stats_text = f"""📊 統計情報
+🎯 総数: {total_count}枚
+✅ 存在: {existing_count}枚
+❌ 欠損: {missing_count}枚"""
+            self.stats_label.setText(stats_text)
+            
+            self.update_favorites_list()
+            
+        except Exception as e:
+            self.stats_label.setText(f"エラー: {str(e)}")
+            print(f"Refresh favorites error: {e}")
+    
+    def update_favorites_list(self):
+        """フィルター設定に応じてお気に入り一覧を更新"""
+        try:
+            all_favorites = self.tag_manager.get_favorite_images()
+            
+            # フィルター処理
+            if self.current_folder_only.isChecked() and hasattr(self.viewer, 'images') and self.viewer.images:
+                # 現在のフォルダ内の画像のみ
+                current_paths = set(self.viewer.images)
+                filtered_favorites = [
+                    (img_path, file_name, updated_at) 
+                    for img_path, file_name, updated_at in all_favorites
+                    if img_path in current_paths and os.path.exists(img_path)
+                ]
+            else:
+                # すべてのお気に入り（存在するもののみ）
+                filtered_favorites = [
+                    (img_path, file_name, updated_at) 
+                    for img_path, file_name, updated_at in all_favorites
+                    if os.path.exists(img_path)
+                ]
+            
+            # リストを更新
+            self.favorites_list.clear()
+            for img_path, file_name, updated_at in filtered_favorites:
+                item_text = f"⭐ {file_name}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, img_path)
+                self.favorites_list.addItem(item)
+            
+            # カウント表示を更新
+            count_text = f"⭐ お気に入り画像 ({len(filtered_favorites)}枚)"
+            if self.current_folder_only.isChecked():
+                count_text += " - 現在のフォルダ内"
+            self.favorites_count_label.setText(count_text)
+            
+            # 最初のアイテムを選択
+            if self.favorites_list.count() > 0:
+                self.favorites_list.setCurrentRow(0)
+                first_item = self.favorites_list.item(0)
+                if first_item:
+                    self.show_image_preview(first_item)
+            else:
+                self.preview_label.setText("お気に入り画像がありません")
+                self.image_info_label.setText("")
+                
+        except Exception as e:
+            print(f"Update favorites list error: {e}")
+    
+    def show_image_preview(self, item):
+        """選択された画像のプレビューを表示（タグタブと同様）"""
+        file_path = item.data(Qt.UserRole)
+        if not file_path or not os.path.exists(file_path):
+            self.preview_label.setText("画像ファイルが見つかりません")
+            self.image_info_label.setText("")
+            return
+        
+        try:
+            # 画像を読み込み
+            with Image.open(file_path) as pil_image:
+                # QPixmapに変換
+                image_rgba = pil_image.convert("RGBA")
+                w, h = image_rgba.size
+                qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
+                original_pixmap = QPixmap.fromImage(qimage)
+                
+                # プレビューラベルのサイズを取得
+                label_width = self.preview_label.width() - 20
+                label_height = self.preview_label.height() - 20
+                
+                if label_width <= 50 or label_height <= 50:
+                    label_width, label_height = 400, 300
+                
+                # アスペクト比を保ったままスケール
+                scaled_pixmap = original_pixmap.scaled(
+                    label_width, label_height,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+                
+                self.preview_label.setStyleSheet("""
+                    QLabel {
+                        background-color: #f8f8f8;
+                        border: 1px solid #cccccc;
+                        border-radius: 8px;
+                    }
+                """)
+                self.preview_label.setPixmap(scaled_pixmap)
+                
+                # 画像情報を表示
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                file_size_mb = file_size / (1024 * 1024)
+                
+                # 元の画像サイズを取得
+                with Image.open(file_path) as orig_image:
+                    orig_width, orig_height = orig_image.size
+                
+                # タグ情報を取得
+                tags = self.tag_manager.get_tags(file_path)
+                tags_text = f"タグ: {', '.join(tags)}" if tags else "タグ: なし"
+                
+                info_text = f"""⭐ {file_name}
+📏 {orig_width} × {orig_height}
+💾 {file_size_mb:.1f} MB
+🏷️ {tags_text}"""
+                
+                self.image_info_label.setText(info_text)
+                
+        except Exception as e:
+            self.preview_label.setText(f"画像の読み込みに失敗しました\n{str(e)}")
+            self.image_info_label.setText("")
+            print(f"Preview error: {e}")
+    
+    def open_image(self, item):
+        """お気に入り画像を開く（ダブルクリック時）"""
+        file_path = item.data(Qt.UserRole)
+        if file_path and os.path.exists(file_path):
+            # フォルダを切り替えて画像を表示
+            folder_path = os.path.dirname(file_path)
+            self.viewer.load_images(folder_path)
+            
+            # 該当画像を選択
+            if file_path in self.viewer.images:
+                self.viewer.current_image_index = self.viewer.images.index(file_path)
+                self.viewer.show_image()
+                
+            # ビューアータブに切り替え
+            self.viewer.tabs.setCurrentWidget(self.viewer.image_tab)
+
 # KabaViewerのメイン統合用関数
 def integrate_tag_system_to_kabaviewer(viewer):
     """既存のKabaViewerにタグシステムを統合"""

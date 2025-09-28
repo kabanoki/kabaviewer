@@ -12,7 +12,7 @@ from favorite import FavoriteTab
 # タグシステムのインポート
 try:
     from tag_manager import TagManager
-    from tag_ui import TagTab, TagEditDialog, show_auto_tag_dialog, show_exclude_settings_dialog, show_mapping_rules_dialog, FavoriteImagesDialog
+    from tag_ui import TagTab, TagEditDialog, show_auto_tag_dialog, show_exclude_settings_dialog, show_mapping_rules_dialog, FavoriteImagesDialog, FavoritesTab
     TAG_SYSTEM_AVAILABLE = True
 except ImportError as e:
     print(f"タグシステムのインポートに失敗しました: {e}")
@@ -1096,8 +1096,10 @@ class ImageViewer(QMainWindow):
         # タグタブを作成
         if TAG_SYSTEM_AVAILABLE and self.tag_manager:
             self.tag_tab = TagTab(self.tag_manager, self)
+            self.favorites_tab = FavoritesTab(self.tag_manager, self)
         else:
             self.tag_tab = None
+            self.favorites_tab = None
 
         # タブに追加
         self.tabs.addTab(self.image_tab, "ビュアー")
@@ -1105,6 +1107,8 @@ class ImageViewer(QMainWindow):
         self.tabs.addTab(self.history_tab, "履歴")
         if self.tag_tab:
             self.tabs.addTab(self.tag_tab, "🏷️ タグ")
+        if self.favorites_tab:
+            self.tabs.addTab(self.favorites_tab, "⭐ お気に入り")
 
         # メインレイアウトにタブを追加
         main_layout = QVBoxLayout()
@@ -2110,6 +2114,10 @@ class ImageViewer(QMainWindow):
             self.show_image()
             self.settings.setValue("last_folder", folder_path)
             self.history_tab.update_folder_history(folder_path)
+            
+            # お気に入りタブも更新
+            if TAG_SYSTEM_AVAILABLE and self.favorites_tab:
+                self.favorites_tab.update_favorites_list()
         except Exception as e:
             print(f"load_images Error: {e}")  # エラーの内容を出力
             # フォルダ選択ダイアログは呼び出し元で処理される
@@ -2524,10 +2532,6 @@ class ImageViewer(QMainWindow):
                     else:
                         favorite_action = context_menu.addAction("☆ お気に入りに追加 (F)")
                     favorite_action.triggered.connect(lambda: self.toggle_favorite_status())
-                    
-                    # お気に入り一覧表示メニューを追加
-                    favorites_list_action = context_menu.addAction("⭐ お気に入り一覧")
-                    favorites_list_action.triggered.connect(self.show_favorite_images_dialog)
                 except Exception:
                     # エラー時はメニューを追加しない
                     pass
@@ -3021,58 +3025,26 @@ class ImageViewer(QMainWindow):
             QMessageBox.warning(self, "エラー", f"お気に入り更新エラー: {str(e)}")
     
     def show_favorite_images_dialog(self):
-        """お気に入り画像の一覧ダイアログを表示"""
+        """お気に入り画像タブを表示"""
         if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
             QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
             return
         
-        if not self.images:
-            QMessageBox.warning(self, "エラー", "表示する画像がありません。")
+        if not self.favorites_tab:
+            QMessageBox.warning(self, "エラー", "お気に入りタブが利用できません。")
             return
         
         try:
-            # 全てのお気に入り画像を取得
-            all_favorite_images = self.tag_manager.get_favorite_images()
-            if not all_favorite_images:
-                QMessageBox.information(self, "お気に入り", "お気に入り画像がありません。")
-                return
+            # お気に入りタブに切り替え
+            self.tabs.setCurrentWidget(self.favorites_tab)
             
-            # 現在のビューア画像リストに含まれるお気に入り画像のみをフィルタリング
-            current_favorite_images = []
-            for image_path, file_name, updated_at in all_favorite_images:
-                if image_path in self.images:
-                    current_favorite_images.append((image_path, file_name, updated_at))
+            # お気に入りリストを更新
+            self.favorites_tab.refresh_favorites()
             
-            if not current_favorite_images:
-                QMessageBox.information(
-                    self, "お気に入り", 
-                    "現在のフォルダ内にお気に入り画像がありません。\n"
-                    f"全体で{len(all_favorite_images)}枚のお気に入り画像がありますが、"
-                    "別のフォルダに保存されています。"
-                )
-                return
-            
-            dialog = FavoriteImagesDialog(current_favorite_images, self.tag_manager, self)
-            dialog.setWindowTitle(f"⭐ 現在のフォルダのお気に入り画像 ({len(current_favorite_images)}枚)")
-            
-            if dialog.exec_() == QDialog.Accepted:
-                # 選択された画像があれば表示
-                selected_path = dialog.get_selected_image_path()
-                if selected_path:
-                    if selected_path in self.images:
-                        self.current_image_index = self.images.index(selected_path)
-                        self.show_image()
-                        self.update_sidebar_metadata()
-                        self.show_message(f"📷 「{os.path.basename(selected_path)}」を表示しました")
-                    else:
-                        QMessageBox.warning(
-                            self, "エラー", 
-                            "選択された画像が現在のリストに見つかりません。\n"
-                            "フォルダを再読み込みしてください。"
-                        )
+            self.show_message("⭐ お気に入りタブを表示しました")
                     
         except Exception as e:
-            QMessageBox.warning(self, "エラー", f"お気に入り一覧表示エラー: {str(e)}")
+            QMessageBox.warning(self, "エラー", f"お気に入りタブ表示エラー: {str(e)}")
     
     def show_tag_edit_dialog(self):
         """現在の画像のタグ編集ダイアログを表示"""
