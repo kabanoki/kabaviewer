@@ -3015,20 +3015,50 @@ class ImageViewer(QMainWindow):
             QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
             return
         
+        if not self.images:
+            QMessageBox.warning(self, "エラー", "表示する画像がありません。")
+            return
+        
         try:
-            favorite_images = self.tag_manager.get_favorite_images()
-            if not favorite_images:
+            # 全てのお気に入り画像を取得
+            all_favorite_images = self.tag_manager.get_favorite_images()
+            if not all_favorite_images:
                 QMessageBox.information(self, "お気に入り", "お気に入り画像がありません。")
                 return
             
-            dialog = FavoriteImagesDialog(favorite_images, self.tag_manager, self)
+            # 現在のビューア画像リストに含まれるお気に入り画像のみをフィルタリング
+            current_favorite_images = []
+            for image_path, file_name, updated_at in all_favorite_images:
+                if image_path in self.images:
+                    current_favorite_images.append((image_path, file_name, updated_at))
+            
+            if not current_favorite_images:
+                QMessageBox.information(
+                    self, "お気に入り", 
+                    "現在のフォルダ内にお気に入り画像がありません。\n"
+                    f"全体で{len(all_favorite_images)}枚のお気に入り画像がありますが、"
+                    "別のフォルダに保存されています。"
+                )
+                return
+            
+            dialog = FavoriteImagesDialog(current_favorite_images, self.tag_manager, self)
+            dialog.setWindowTitle(f"⭐ 現在のフォルダのお気に入り画像 ({len(current_favorite_images)}枚)")
+            
             if dialog.exec_() == QDialog.Accepted:
                 # 選択された画像があれば表示
                 selected_path = dialog.get_selected_image_path()
-                if selected_path and selected_path in self.images:
-                    self.current_image_index = self.images.index(selected_path)
-                    self.show_image()
-                    self.update_sidebar_metadata()
+                if selected_path:
+                    if selected_path in self.images:
+                        self.current_image_index = self.images.index(selected_path)
+                        self.show_image()
+                        self.update_sidebar_metadata()
+                        self.show_message(f"📷 「{os.path.basename(selected_path)}」を表示しました")
+                    else:
+                        QMessageBox.warning(
+                            self, "エラー", 
+                            "選択された画像が現在のリストに見つかりません。\n"
+                            "フォルダを再読み込みしてください。"
+                        )
                     
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"お気に入り一覧表示エラー: {str(e)}")

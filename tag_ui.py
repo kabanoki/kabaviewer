@@ -1514,8 +1514,9 @@ class FavoriteImagesDialog(QDialog):
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
         
-        # ヘッダー
-        header_label = QLabel(f"⭐ お気に入り画像一覧 ({len(self.favorite_images)}枚)")
+        # ヘッダー（動的にカウント）
+        existing_count = sum(1 for image_path, _, _ in self.favorite_images if os.path.exists(image_path))
+        header_label = QLabel(f"⭐ お気に入り画像一覧 ({existing_count}枚)")
         header_label.setStyleSheet("""
             QLabel {
                 font-size: 16px;
@@ -1549,6 +1550,7 @@ class FavoriteImagesDialog(QDialog):
         self.image_list.itemDoubleClicked.connect(self.on_item_double_clicked)
         
         # 画像リストを埋める
+        missing_files = []
         for image_path, file_name, updated_at in self.favorite_images:
             if os.path.exists(image_path):
                 # ファイルが存在する場合のみ追加
@@ -1559,6 +1561,39 @@ class FavoriteImagesDialog(QDialog):
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, image_path)
                 self.image_list.addItem(item)
+            else:
+                missing_files.append(file_name)
+        
+        # 存在しないファイルがある場合は情報を表示
+        if missing_files and len(missing_files) < 5:  # 少数の場合のみ詳細表示
+            missing_info = QLabel(f"⚠️ 見つからないファイル: {', '.join(missing_files)}")
+            missing_info.setStyleSheet("""
+                QLabel {
+                    color: #ff6b35;
+                    font-size: 12px;
+                    padding: 5px;
+                    background-color: #fff3cd;
+                    border: 1px solid #ffeaa7;
+                    border-radius: 4px;
+                    margin-bottom: 5px;
+                }
+            """)
+            missing_info.setWordWrap(True)
+            layout.insertWidget(1, missing_info)  # ヘッダーの下に挿入
+        elif missing_files:  # 多数の場合は件数のみ表示
+            missing_info = QLabel(f"⚠️ {len(missing_files)}個のファイルが見つかりません")
+            missing_info.setStyleSheet("""
+                QLabel {
+                    color: #ff6b35;
+                    font-size: 12px;
+                    padding: 5px;
+                    background-color: #fff3cd;
+                    border: 1px solid #ffeaa7;
+                    border-radius: 4px;
+                    margin-bottom: 5px;
+                }
+            """)
+            layout.insertWidget(1, missing_info)  # ヘッダーの下に挿入
         
         layout.addWidget(self.image_list)
         
