@@ -1284,6 +1284,11 @@ class ImageViewer(QMainWindow):
         # サイドバーの最小幅を設定（より広く使いやすく）
         self.sidebar_widget.setMinimumWidth(300)
         self.sidebar_widget.setMaximumWidth(600)
+        
+        # リストモードの初期化
+        self.list_mode = "folder"  # "folder" または "filter"
+        self.current_folder = None
+        self.filter_description = ""
     
     def toggle_sidebar(self):
         """サイドバーの表示/非表示を切り替え"""
@@ -2115,6 +2120,11 @@ class ImageViewer(QMainWindow):
             self.settings.setValue("last_folder", folder_path)
             self.history_tab.update_folder_history(folder_path)
             
+            # フォルダモードに設定
+            self.list_mode = "folder"
+            self.current_folder = folder_path
+            self.update_window_title()
+            
             # お気に入りタブも更新
             if TAG_SYSTEM_AVAILABLE and self.favorites_tab:
                 self.favorites_tab.update_favorites_list()
@@ -2122,6 +2132,49 @@ class ImageViewer(QMainWindow):
             print(f"load_images Error: {e}")  # エラーの内容を出力
             # フォルダ選択ダイアログは呼び出し元で処理される
             raise  # エラーを再発生させて呼び出し元で処理
+    
+    def load_filtered_images(self, image_list, description="フィルタリング結果"):
+        """フィルタリングされた画像リストをビューアーに読み込み"""
+        try:
+            # 存在する画像ファイルのみをフィルタ
+            self.images = [img_path for img_path in image_list if os.path.exists(img_path)]
+            
+            if not self.images:
+                raise ValueError("No valid images in the filtered list.")
+            
+            self.current_image_index = 0  # 最初の画像から開始
+            self.sort_images()
+            self.initialize_grid_system()
+            self.show_image()
+            
+            # フィルタモードに設定
+            self.list_mode = "filter"
+            self.filter_description = description
+            self.current_folder = None  # フォルダベースではない
+            self.update_window_title()
+            
+            # ビューアータブに切り替え
+            self.tabs.setCurrentWidget(self.image_tab)
+            
+            self.show_message(f"📋 {description} ({len(self.images)}枚)")
+        except Exception as e:
+            print(f"load_filtered_images Error: {e}")
+            raise
+    
+    def update_window_title(self):
+        """ウィンドウタイトルを現在の状態に応じて更新"""
+        if hasattr(self, 'list_mode'):
+            if self.list_mode == "folder" and hasattr(self, 'current_folder'):
+                folder_name = os.path.basename(self.current_folder) if self.current_folder else ""
+                title = f"KabaViewer - {folder_name} ({len(self.images)}枚)" if self.images else "KabaViewer"
+            elif self.list_mode == "filter" and hasattr(self, 'filter_description'):
+                title = f"KabaViewer - {self.filter_description} ({len(self.images)}枚)" if self.images else "KabaViewer"
+            else:
+                title = "KabaViewer"
+        else:
+            title = "KabaViewer"
+        
+        self.setWindowTitle(title)
 
     def show_image(self):
         if self.display_mode == 'single':

@@ -367,7 +367,37 @@ class TagTab(QWidget):
         results_layout = QVBoxLayout(results_widget)
         results_layout.setContentsMargins(0, 0, 0, 0)
         
-        results_layout.addWidget(QLabel("📸 検索結果"))
+        # 検索結果ヘッダーとボタン
+        results_header_layout = QHBoxLayout()
+        results_header_layout.addWidget(QLabel("📸 検索結果"))
+        results_header_layout.addStretch()  # 空白で押し離す
+        
+        # 「ビューアーで表示」ボタンを追加
+        self.view_in_viewer_btn = QPushButton("🖼️ ビューアーで表示")
+        self.view_in_viewer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a90e2;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #357abd;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.view_in_viewer_btn.clicked.connect(self.show_results_in_viewer)
+        self.view_in_viewer_btn.setEnabled(False)  # 初期状態では無効
+        results_header_layout.addWidget(self.view_in_viewer_btn)
+        
+        results_layout.addLayout(results_header_layout)
+        
         self.results_list = KeyboardNavigableListWidget(self)
         self.results_list.itemDoubleClicked.connect(self.open_image)
         self.results_list.itemClicked.connect(self.show_image_preview)  # 単一クリックでプレビュー
@@ -472,8 +502,12 @@ class TagTab(QWidget):
                 if first_item:
                     self.show_image_preview(first_item)
                 
+            # ビューアーボタンの有効/無効を設定
+            self.view_in_viewer_btn.setEnabled(self.results_list.count() > 0)
+                
         except Exception as e:
             print(f"Search error: {e}")
+            self.view_in_viewer_btn.setEnabled(False)
     
     def show_image_preview(self, item):
         """選択された画像のプレビューを表示"""
@@ -540,6 +574,37 @@ class TagTab(QWidget):
             self.preview_label.setText(f"画像の読み込みに失敗しました\n{str(e)}")
             self.image_info_label.setText("")
             print(f"Preview error: {e}")
+    
+    def show_results_in_viewer(self):
+        """検索結果をビューアーで表示"""
+        if self.results_list.count() == 0:
+            QMessageBox.information(self, "情報", "表示する検索結果がありません。")
+            return
+            
+        # 検索結果の画像パスリストを取得
+        image_paths = []
+        for i in range(self.results_list.count()):
+            item = self.results_list.item(i)
+            file_path = item.data(Qt.UserRole)
+            if file_path and os.path.exists(file_path):
+                image_paths.append(file_path)
+        
+        if not image_paths:
+            QMessageBox.warning(self, "エラー", "有効な画像ファイルが見つかりませんでした。")
+            return
+        
+        try:
+            # 検索タグ情報を取得
+            search_text = self.search_input.text().strip()
+            description = f"タグ検索: {search_text}"
+            
+            # ビューアーでフィルタリングされたリストを表示
+            self.viewer.load_filtered_images(image_paths, description)
+            
+            QMessageBox.information(self, "成功", f"{len(image_paths)}枚の画像をビューアーで表示しました。")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"ビューアー表示に失敗しました: {str(e)}")
     
     def open_image(self, item):
         """検索結果の画像を開く（ダブルクリック時）"""
@@ -624,8 +689,37 @@ class FavoritesTab(QWidget):
         favorites_layout = QVBoxLayout(favorites_widget)
         favorites_layout.setContentsMargins(0, 0, 0, 0)
         
+        # お気に入りヘッダーとボタン
+        favorites_header_layout = QHBoxLayout()
         self.favorites_count_label = QLabel("⭐ お気に入り画像")
-        favorites_layout.addWidget(self.favorites_count_label)
+        favorites_header_layout.addWidget(self.favorites_count_label)
+        favorites_header_layout.addStretch()  # 空白で押し離す
+        
+        # 「ビューアーで表示」ボタンを追加
+        self.view_favorites_in_viewer_btn = QPushButton("🖼️ ビューアーで表示")
+        self.view_favorites_in_viewer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff8c00;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #ff7700;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.view_favorites_in_viewer_btn.clicked.connect(self.show_favorites_in_viewer)
+        self.view_favorites_in_viewer_btn.setEnabled(False)  # 初期状態では無効
+        favorites_header_layout.addWidget(self.view_favorites_in_viewer_btn)
+        
+        favorites_layout.addLayout(favorites_header_layout)
         
         self.favorites_list = KeyboardNavigableListWidget(self)
         self.favorites_list.itemDoubleClicked.connect(self.open_image)
@@ -757,9 +851,13 @@ class FavoritesTab(QWidget):
             else:
                 self.preview_label.setText("お気に入り画像がありません")
                 self.image_info_label.setText("")
+            
+            # ビューアーボタンの有効/無効を設定
+            self.view_favorites_in_viewer_btn.setEnabled(self.favorites_list.count() > 0)
                 
         except Exception as e:
             print(f"Update favorites list error: {e}")
+            self.view_favorites_in_viewer_btn.setEnabled(False)
     
     def show_image_preview(self, item):
         """選択された画像のプレビューを表示（タグタブと同様）"""
@@ -825,6 +923,39 @@ class FavoritesTab(QWidget):
             self.preview_label.setText(f"画像の読み込みに失敗しました\n{str(e)}")
             self.image_info_label.setText("")
             print(f"Preview error: {e}")
+    
+    def show_favorites_in_viewer(self):
+        """お気に入り画像をビューアーで表示"""
+        if self.favorites_list.count() == 0:
+            QMessageBox.information(self, "情報", "表示するお気に入り画像がありません。")
+            return
+            
+        # お気に入り画像パスリストを取得
+        image_paths = []
+        for i in range(self.favorites_list.count()):
+            item = self.favorites_list.item(i)
+            file_path = item.data(Qt.UserRole)
+            if file_path and os.path.exists(file_path):
+                image_paths.append(file_path)
+        
+        if not image_paths:
+            QMessageBox.warning(self, "エラー", "有効なお気に入り画像が見つかりませんでした。")
+            return
+        
+        try:
+            # フィルター状態に応じた説明文を生成
+            if self.current_folder_only.isChecked():
+                description = "お気に入り画像 (現在のフォルダ内)"
+            else:
+                description = "お気に入り画像 (全体)"
+            
+            # ビューアーでフィルタリングされたリストを表示
+            self.viewer.load_filtered_images(image_paths, description)
+            
+            QMessageBox.information(self, "成功", f"{len(image_paths)}枚のお気に入り画像をビューアーで表示しました。")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"ビューアー表示に失敗しました: {str(e)}")
     
     def open_image(self, item):
         """お気に入り画像を開く（ダブルクリック時）"""
