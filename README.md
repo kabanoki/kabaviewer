@@ -218,7 +218,7 @@ pyinstaller --onefile main.py
 
 ## 作者
 
-開発者: [あなたの名前]
+開発者: KABANOKI
 
 ---
 

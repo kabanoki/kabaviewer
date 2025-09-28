@@ -255,40 +255,75 @@ class TagManager:
         return [(row[0], row[1], row[2]) for row in results]
     
     def search_by_tags(self, tags, match_all=True):
-        """タグで画像を検索"""
+        """タグで画像を検索（JSON配列内の完全一致）"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        if match_all:
-            # すべてのタグにマッチ
-            query = '''
-                SELECT file_path FROM image_tags 
-                WHERE ''' + ' AND '.join(['tags LIKE ?' for _ in tags])
-            params = [f'%"{tag}"%' for tag in tags]
-        else:
-            # いずれかのタグにマッチ
-            query = '''
-                SELECT file_path FROM image_tags 
-                WHERE ''' + ' OR '.join(['tags LIKE ?' for _ in tags])
-            params = [f'%"{tag}"%' for tag in tags]
-        
-        cursor.execute(query, params)
-        results = [row[0] for row in cursor.fetchall() if os.path.exists(row[0])]
-        
+        # 最新のレコードのみを取得（重複を避ける）
+        cursor.execute('''
+            SELECT DISTINCT file_path, tags 
+            FROM image_tags 
+            WHERE (file_path, updated_at) IN (
+                SELECT file_path, MAX(updated_at) 
+                FROM image_tags 
+                GROUP BY file_path
+            )
+        ''')
+        all_records = cursor.fetchall()
         conn.close()
-        return results
+        
+        matching_files = []
+        
+        for file_path, tags_json in all_records:
+            # ファイルが存在するかチェック
+            if not os.path.exists(file_path):
+                continue
+                
+            try:
+                # JSONをパースしてタグリストを取得
+                file_tags = json.loads(tags_json) if tags_json else []
+                
+                # マッチング判定
+                is_match = False
+                if match_all:
+                    # すべての検索タグが画像のタグに含まれているかチェック
+                    is_match = all(tag in file_tags for tag in tags)
+                else:
+                    # いずれかの検索タグが画像のタグに含まれているかチェック
+                    is_match = any(tag in file_tags for tag in tags)
+                
+                if is_match:
+                    matching_files.append(file_path)
+                        
+            except (json.JSONDecodeError, TypeError):
+                # JSONの解析に失敗した場合はスキップ
+                continue
+        
+        return matching_files
     
     def get_all_tags(self):
         """すべてのユニークタグを取得"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cursor.execute('SELECT tags FROM image_tags')
+        # 最新のレコードのみを取得（重複を避ける）
+        cursor.execute('''
+            SELECT DISTINCT file_path, tags 
+            FROM image_tags 
+            WHERE (file_path, updated_at) IN (
+                SELECT file_path, MAX(updated_at) 
+                FROM image_tags 
+                GROUP BY file_path
+            )
+        ''')
+        
         all_tags_set = set()
         
-        for row in cursor.fetchall():
+        all_records = cursor.fetchall()
+        
+        for row in all_records:
             try:
-                tags_list = json.loads(row[0])
+                tags_list = json.loads(row[1]) if row[1] else []
                 all_tags_set.update(tags_list)
             except (json.JSONDecodeError, TypeError):
                 continue
@@ -297,6 +332,48 @@ class TagManager:
         return sorted(list(all_tags_set))
     
     # プライベートメソッド
+    def _get_tags_from_database(self, file_path):
+        """SQLiteデータベースから特定画像のタグを取得"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # 最新のレコードを取得
+        cursor.execute('''
+            SELECT tags FROM image_tags 
+            WHERE file_path = ? 
+            ORDER BY updated_at DESC 
+            LIMIT 1
+        ''', (file_path,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            try:
+                tags = json.loads(result[0])
+                return tags
+            except (json.JSONDecodeError, TypeError):
+                return []
+        
+        return []
+    
+    def _get_tags_from_qsettings_backup(self, file_path):
+        """QSettingsバックアップからタグを取得"""
+        settings_key = f"tags/{file_path}"
+        tags_json = self.settings.value(settings_key, "[]")
+        
+        try:
+            tags = json.loads(tags_json) if tags_json else []
+            return tags
+        except (json.JSONDecodeError, TypeError):
+            return []
+    
+    def _save_to_qsettings_backup(self, file_path, tags):
+        """QSettingsにタグをバックアップ保存"""
+        settings_key = f"tags/{file_path}"
+        tags_json = json.dumps(tags, ensure_ascii=False)
+        self.settings.setValue(settings_key, tags_json)
+    
     def _save_to_database(self, file_path, file_hash, tags, is_favorite=None):
         """SQLiteデータベースに保存"""
         conn = sqlite3.connect(self.db_path)
