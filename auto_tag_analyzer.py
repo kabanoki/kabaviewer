@@ -725,6 +725,17 @@ class AutoTagAnalyzer:
             "white shirt": ["白シャツ"],
             "nude": ["裸"],
 
+            #肌
+            "pale skin": ["白肌"],
+            "fair skin": ["白肌"],
+            "light skin": ["白肌"],
+            "dark skin": ["黒肌"],
+            "dark-skinned": ["黒肌"],
+            "tanned skin": ["茶肌"],
+            "tan skin": ["茶肌"],
+            "sun-kissed skin": ["茶肌"],
+            "sun-kissed": ["茶肌"],
+
             # 成人向け体位・行為
             "cowgirl position": ["騎乗位"],
             "wariza cowgirl position": ["騎乗位"],
