@@ -683,7 +683,8 @@ class AutoTagAnalyzer:
             "turtleneck": ["タートルネック"],
             "virgin killer sweater": ["童貞を殺す服", "セーター"],
             "white shirt": ["白シャツ"],
-            
+            "nude": ["裸"],
+
             # 成人向け体位・行為
             "cowgirl position": ["騎乗位"],
             "wariza cowgirl position": ["騎乗位"],
