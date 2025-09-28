@@ -10,8 +10,33 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSizePolicy, QProgressBar, QTableWidget, QTableWidgetItem,
                              QHeaderView, QGroupBox, QProgressDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QFont, QPalette, QColor
+from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QImage
 from tag_manager import TagManager
+from PIL import Image
+
+class KeyboardNavigableListWidget(QListWidget):
+    """キーボードナビゲーション対応のリストウィジェット"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_tab = parent
+        self.currentItemChanged.connect(self.on_current_item_changed)
+    
+    def on_current_item_changed(self, current, previous):
+        """選択アイテムが変更された時の処理（キーボード操作を含む）"""
+        if current and hasattr(self.parent_tab, 'show_image_preview'):
+            self.parent_tab.show_image_preview(current)
+    
+    def keyPressEvent(self, event):
+        """キーボードイベントの処理"""
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            # エンターキーが押された時の処理
+            current_item = self.currentItem()
+            if current_item and hasattr(self.parent_tab, 'open_image'):
+                self.parent_tab.open_image(current_item)
+        else:
+            # その他のキーは通常通り処理
+            super().keyPressEvent(event)
 
 class TagChip(QFrame):
     """タグを表示する小さなチップUI"""
@@ -330,14 +355,69 @@ class TagTab(QWidget):
         self.all_tags_list.itemClicked.connect(self.tag_clicked)
         left_layout.addWidget(self.all_tags_list)
         
-        # 右側: 検索結果
+        # 右側: 検索結果と画像プレビュー
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         
-        right_layout.addWidget(QLabel("📸 検索結果"))
-        self.results_list = QListWidget()
+        # 上下分割用のスプリッター
+        vertical_splitter = QSplitter(Qt.Vertical)
+        
+        # 上側: 検索結果
+        results_widget = QWidget()
+        results_layout = QVBoxLayout(results_widget)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        
+        results_layout.addWidget(QLabel("📸 検索結果"))
+        self.results_list = KeyboardNavigableListWidget(self)
         self.results_list.itemDoubleClicked.connect(self.open_image)
-        right_layout.addWidget(self.results_list)
+        self.results_list.itemClicked.connect(self.show_image_preview)  # 単一クリックでプレビュー
+        results_layout.addWidget(self.results_list)
+        
+        vertical_splitter.addWidget(results_widget)
+        
+        # 下側: 画像プレビューエリア
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        
+        preview_layout.addWidget(QLabel("🖼️ 画像プレビュー"))
+        
+        # 画像表示ラベル
+        self.preview_label = QLabel()
+        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 2px dashed #cccccc;
+                border-radius: 8px;
+                color: #666666;
+                font-size: 14px;
+            }
+        """)
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setText("画像を選択してください")
+        self.preview_label.setScaledContents(False)  # アスペクト比を保持
+        preview_layout.addWidget(self.preview_label)
+        
+        # 画像情報ラベル
+        self.image_info_label = QLabel()
+        self.image_info_label.setStyleSheet("""
+            QLabel {
+                color: #666666;
+                font-size: 11px;
+                padding: 5px;
+            }
+        """)
+        self.image_info_label.setWordWrap(True)
+        preview_layout.addWidget(self.image_info_label)
+        
+        vertical_splitter.addWidget(preview_widget)
+        
+        # スプリッターの比率を設定（上:下 = 1:1）
+        vertical_splitter.setStretchFactor(0, 1)
+        vertical_splitter.setStretchFactor(1, 1)
+        
+        right_layout.addWidget(vertical_splitter)
         
         # スプリッター
         splitter = QSplitter(Qt.Horizontal)
@@ -384,12 +464,85 @@ class TagTab(QWidget):
                 item = QListWidgetItem(os.path.basename(file_path))
                 item.setData(Qt.UserRole, file_path)
                 self.results_list.addItem(item)
+            
+            # 検索結果がある場合は最初のアイテムを選択してプレビューを表示
+            if self.results_list.count() > 0:
+                self.results_list.setCurrentRow(0)
+                first_item = self.results_list.item(0)
+                if first_item:
+                    self.show_image_preview(first_item)
                 
         except Exception as e:
             print(f"Search error: {e}")
     
+    def show_image_preview(self, item):
+        """選択された画像のプレビューを表示"""
+        file_path = item.data(Qt.UserRole)
+        if not file_path or not os.path.exists(file_path):
+            self.preview_label.setText("画像ファイルが見つかりません")
+            self.image_info_label.setText("")
+            return
+        
+        try:
+            # 画像を読み込み
+            with Image.open(file_path) as pil_image:
+                # QPixmapに変換
+                image_rgba = pil_image.convert("RGBA")
+                w, h = image_rgba.size
+                qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
+                original_pixmap = QPixmap.fromImage(qimage)
+                
+                # プレビューラベルのサイズを取得
+                label_width = self.preview_label.width() - 20  # マージンを考慮
+                label_height = self.preview_label.height() - 20
+                
+                if label_width <= 50 or label_height <= 50:
+                    label_width, label_height = 400, 300  # デフォルトサイズ
+                
+                # アスペクト比を保ったままスケール
+                scaled_pixmap = original_pixmap.scaled(
+                    label_width, label_height,
+                    Qt.KeepAspectRatio,  # アスペクト比を保持
+                    Qt.SmoothTransformation  # 高品質なスケーリング
+                )
+                
+                # プレビューラベルの背景をリセットしてから画像を表示
+                self.preview_label.setStyleSheet("""
+                    QLabel {
+                        background-color: #f8f8f8;
+                        border: 1px solid #cccccc;
+                        border-radius: 8px;
+                    }
+                """)
+                self.preview_label.setPixmap(scaled_pixmap)
+                
+                # 画像情報を表示
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                file_size_mb = file_size / (1024 * 1024)
+                
+                # 元の画像サイズを取得
+                with Image.open(file_path) as orig_image:
+                    orig_width, orig_height = orig_image.size
+                
+                # タグ情報を取得
+                tags = self.tag_manager.get_tags(file_path)
+                tags_text = f"タグ: {', '.join(tags)}" if tags else "タグ: なし"
+                
+                info_text = f"""📁 {file_name}
+📏 {orig_width} × {orig_height}
+💾 {file_size_mb:.1f} MB
+🏷️ {tags_text}"""
+                
+                self.image_info_label.setText(info_text)
+                
+        except Exception as e:
+            self.preview_label.setText(f"画像の読み込みに失敗しました\n{str(e)}")
+            self.image_info_label.setText("")
+            print(f"Preview error: {e}")
+    
     def open_image(self, item):
-        """検索結果の画像を開く"""
+        """検索結果の画像を開く（ダブルクリック時）"""
         file_path = item.data(Qt.UserRole)
         if file_path and os.path.exists(file_path):
             # フォルダを切り替えて画像を表示
