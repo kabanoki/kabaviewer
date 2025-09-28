@@ -197,10 +197,20 @@ class AutoTagAnalyzer:
         
         # プロンプトテキストを統合（Hires promptは除外）
         all_text = ""
-        if prompt_data.get("prompt"):
-            all_text += prompt_data["prompt"] + " "
-        if prompt_data.get("negative_prompt"):
-            all_text += prompt_data["negative_prompt"] + " "
+        
+        # プロンプトデータの型安全処理
+        prompt = prompt_data.get("prompt")
+        if prompt and isinstance(prompt, str):
+            all_text += prompt + " "
+        elif prompt:
+            print(f"[警告] プロンプトが文字列でない: {type(prompt)} - {prompt}")
+            
+        negative_prompt = prompt_data.get("negative_prompt") 
+        if negative_prompt and isinstance(negative_prompt, str):
+            all_text += negative_prompt + " "
+        elif negative_prompt:
+            print(f"[警告] ネガティブプロンプトが文字列でない: {type(negative_prompt)} - {negative_prompt}")
+            
         # hires_prompt は解析対象から除外
         
         # テキストを小文字に変換して解析
@@ -214,16 +224,27 @@ class AutoTagAnalyzer:
         
         matched_keywords = set()
         for keyword in sorted_keywords:
-            if self._keyword_matches(keyword.lower(), text_lower):
+            # キーワードの型安全チェック
+            if not isinstance(keyword, str):
+                print(f"[警告] キーワードが文字列でない: {type(keyword)} - {keyword}")
+                continue
+                
+            keyword_lower = keyword.lower()
+            if self._keyword_matches(keyword_lower, text_lower):
                 # より長いキーワードが既にマッチしている場合はスキップ
-                if not any(keyword.lower() in longer_keyword for longer_keyword in matched_keywords):
+                if not any(keyword_lower in longer_keyword for longer_keyword in matched_keywords):
                     suggested_tags.update(mapping_rules[keyword])
-                    matched_keywords.add(keyword.lower())
+                    matched_keywords.add(keyword_lower)
         
         return suggested_tags
     
     def _keyword_matches(self, keyword: str, text: str) -> bool:
         """キーワードがテキスト中に存在するかをチェック（単語境界考慮）"""
+        # 型安全チェック
+        if not isinstance(keyword, str) or not isinstance(text, str):
+            print(f"[警告] _keyword_matches: 非文字列引数 - keyword: {type(keyword)}, text: {type(text)}")
+            return False
+            
         # アンダースコアを含むキーワードは完全一致
         if "_" in keyword:
             return keyword in text
@@ -392,6 +413,10 @@ class AutoTagAnalyzer:
             "vaginal": "膣内", "ceiling": "天井", "from below": "下から",
         }
         
+        # 型安全な処理
+        if not isinstance(keyword, str):
+            return str(keyword)
+            
         return translation_dict.get(keyword.lower(), keyword)
     
     def save_custom_rules(self, rules: Dict):
@@ -446,7 +471,22 @@ class AutoTagAnalyzer:
     def load_mapping_rules(self) -> Dict[str, List[str]]:
         """キーワード→タグのマッピングルールを読み込み"""
         default_rules = self.get_default_mapping_rules()
-        custom_rules = self.settings.value("auto_tag_mapping_rules", {}, type=dict)
+        raw_custom_rules = self.settings.value("auto_tag_mapping_rules", {}, type=dict)
+        
+        # カスタムルールの型安全処理
+        custom_rules = {}
+        for key, value in raw_custom_rules.items():
+            # キーが文字列でない場合は文字列に変換
+            if not isinstance(key, str):
+                print(f"[修正] 非文字列キーを文字列に変換: {type(key)} {key} -> str")
+                key = str(key)
+            
+            # 値がリストでない場合は処理をスキップ
+            if not isinstance(value, list):
+                print(f"[警告] キー '{key}' の値がリストでない: {type(value)} - スキップ")
+                continue
+                
+            custom_rules[key] = value
         
         # デフォルトルールとカスタムルールをマージ
         all_rules = default_rules.copy()
