@@ -9,6 +9,15 @@ from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
 from favorite import FavoriteTab
 
+# タグシステムのインポート
+try:
+    from tag_manager import TagManager
+    from tag_ui import TagTab, TagEditDialog, show_auto_tag_dialog, show_exclude_settings_dialog, show_mapping_rules_dialog, FavoriteImagesDialog
+    TAG_SYSTEM_AVAILABLE = True
+except ImportError as e:
+    print(f"タグシステムのインポートに失敗しました: {e}")
+    TAG_SYSTEM_AVAILABLE = False
+
 class ExifInfoDialog(QDialog):
     """画像メタデータを美しく表示するダイアログ"""
     def __init__(self, exif_data, image_path, parent=None):
@@ -57,12 +66,10 @@ class ExifInfoDialog(QDialog):
                     parsed_data['negative_prompt'] = negative_content
                 continue
             
-            # Hiresプロンプト検出（"s"付きに修正）
+            # Hiresプロンプト検出は無効化（解析対象から除外）
             if line.lower().startswith('hires prompt:'):
-                current_section = 'hire'
-                hire_content = line[len('hires prompt:'):].strip()
-                if hire_content:
-                    parsed_data['hire_prompt'] = hire_content
+                current_section = 'hire'  # セクション変更のみ（内容は無視）
+                # hire_content の処理は行わない（解析対象外）
                 continue
             
             # パラメータ行検出 (Steps:, Sampler:, CFG scale: 等)
@@ -111,10 +118,8 @@ class ExifInfoDialog(QDialog):
                         if hires_part.startswith('"') and '",' in hires_part:
                             end_quote = hires_part.find('",')
                             if end_quote != -1:
-                                hires_content = hires_part[1:end_quote]  # 最初の" と最後の", を除去
-                                # \n を実際の改行に変換
-                                hires_content = hires_content.replace('\\n', '\n')
-                                parsed_data['hire_prompt'] = hires_content
+                                # Hires promptの内容は解析対象外のため無視
+                                pass  # hires_contentは保存しない
                 
                 # パラメータを分割して解析（Hires promptの内容を除外）
                 # まずHires promptの内容をマスクして、パラメータ解析から除外
@@ -174,11 +179,8 @@ class ExifInfoDialog(QDialog):
                 else:
                     parsed_data['negative_prompt'] = line
             elif current_section == 'hire':
-                # Hiresプロンプト内の要素
-                if parsed_data['hire_prompt']:
-                    parsed_data['hire_prompt'] += ' ' + line
-                else:
-                    parsed_data['hire_prompt'] = line
+                # Hiresプロンプト内の要素は無視（解析対象外）
+                pass  # 何も処理しない
         
         # タグ推定
         if 'txt2img' in ai_prompt_text.lower():
@@ -203,6 +205,9 @@ class ExifInfoDialog(QDialog):
         scroll_area = QScrollArea()
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # 現在のタグセクション（一番最初に表示、タグシステムが利用可能な場合）
+        self.create_current_tags_section(scroll_layout)
         
         # AI生成画像データがある場合の美しい表示
         if self.parsed_prompt_data['has_ai_data']:
@@ -770,6 +775,181 @@ class ExifInfoDialog(QDialog):
         
         layout.addWidget(frame)
     
+    def create_current_tags_section(self, layout):
+        """現在のタグセクションを作成"""
+        # タグシステムが利用可能でない場合は何もしない
+        if not TAG_SYSTEM_AVAILABLE:
+            return
+        
+        # タグマネージャーを取得（ImageViewerから）
+        try:
+            # parent widget（ImageViewer）からタグマネージャーを取得
+            parent_widget = self.parent()
+            if hasattr(parent_widget, 'tag_manager') and parent_widget.tag_manager:
+                tag_manager = parent_widget.tag_manager
+                current_tags = tag_manager.get_tags(self.image_path)
+                
+                if not current_tags:
+                    return  # タグがない場合は表示しない
+            else:
+                return  # タグマネージャーがない場合は何もしない
+        except Exception as e:
+            return  # エラーの場合は何もしない
+        
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 8px;
+                margin: 5px 0px;
+                padding: 15px;
+            }
+        """)
+        
+        frame_layout = QVBoxLayout(frame)
+        
+        # タイトル行
+        title_layout = QHBoxLayout()
+        
+        # タイトル
+        title_label = QLabel(f"🏷️ 現在のタグ ({len(current_tags)}個)")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #4CAF50;
+                margin-bottom: 10px;
+            }
+        """)
+        title_layout.addWidget(title_label)
+        
+        title_layout.addStretch()
+        
+        # 全コピーボタン
+        copy_all_button = QPushButton("📋 全コピー")
+        copy_all_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                border: none;
+                color: white;
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        copy_all_button.clicked.connect(lambda: QApplication.clipboard().setText(", ".join(current_tags)))
+        copy_all_button.setToolTip("全タグをコピー")
+        title_layout.addWidget(copy_all_button)
+        
+        frame_layout.addLayout(title_layout)
+        
+        # タグ表示エリア
+        tags_widget = QWidget()
+        tags_layout = QVBoxLayout(tags_widget)
+        tags_layout.setContentsMargins(0, 10, 0, 0)
+        tags_layout.setSpacing(8)
+        
+        # タグを動的フローレイアウトで配置（ダイアログ版）
+        self.arrange_dialog_tags_in_flow_layout(current_tags, tags_layout)
+        
+        frame_layout.addWidget(tags_widget)
+        layout.addWidget(frame)
+    
+    def arrange_dialog_tags_in_flow_layout(self, tags, layout):
+        """ダイアログ用のタグ動的フローレイアウト"""
+        if not tags:
+            return
+        
+        # ダイアログの利用可能幅（より広い）
+        available_width = 600  # ダイアログは幅が広い
+        tag_spacing = 8
+        tag_min_width = 60
+        
+        current_row = None
+        current_row_layout = None
+        current_row_width = 0
+        
+        for tag in tags:
+            # タグの推定幅を計算（10pxフォント + より大きなpadding）
+            estimated_width = max(len(tag) * 7 + 40, tag_min_width)  # 10pxフォント×7 + padding + ボタン
+            
+            # 新しい行が必要かチェック
+            need_new_row = (current_row is None or 
+                          current_row_width + estimated_width + tag_spacing > available_width)
+            
+            if need_new_row:
+                # 前の行にストレッチを追加
+                if current_row_layout:
+                    current_row_layout.addStretch()
+                
+                # 新しい行を作成
+                current_row = QWidget()
+                current_row_layout = QHBoxLayout(current_row)
+                current_row_layout.setContentsMargins(0, 0, 0, 0)
+                current_row_layout.setSpacing(tag_spacing)
+                layout.addWidget(current_row)
+                current_row_width = 0
+            
+            # タグのボックスを作成
+            tag_box = QFrame()
+            tag_box.setStyleSheet("""
+                QFrame {
+                    background-color: #4CAF50;
+                    border: 1px solid #45a049;
+                    border-radius: 15px;
+                    padding: 8px 12px;
+                }
+                QFrame:hover {
+                    background-color: #45a049;
+                }
+            """)
+            
+            tag_box_layout = QHBoxLayout(tag_box)
+            tag_box_layout.setContentsMargins(8, 4, 8, 4)
+            tag_box_layout.setSpacing(6)
+            
+            # タグテキスト
+            tag_label = QLabel(tag)
+            tag_label.setStyleSheet("""
+                QLabel {
+                    color: white;
+                    font-size: 10px;
+                    font-weight: bold;
+                }
+            """)
+            tag_box_layout.addWidget(tag_label)
+            
+            # コピーボタン
+            copy_button = QPushButton("📋")
+            copy_button.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                    color: white;
+                    font-size: 10px;
+                    padding: 2px;
+                }
+                QPushButton:hover {
+                    color: #cccccc;
+                }
+            """)
+            copy_button.setFixedSize(20, 20)
+            copy_button.clicked.connect(lambda checked, t=tag: QApplication.clipboard().setText(t))
+            copy_button.setToolTip(f"「{tag}」をコピー")
+            tag_box_layout.addWidget(copy_button)
+            
+            current_row_layout.addWidget(tag_box)
+            current_row_width += estimated_width + tag_spacing
+        
+        # 最後の行にストレッチを追加
+        if current_row_layout:
+            current_row_layout.addStretch()
+
 
 class ImageViewer(QMainWindow):
     def __init__(self):
@@ -782,6 +962,16 @@ class ImageViewer(QMainWindow):
         self.grid_indices = [[], [], [], []]  # 各グリッドの独立した画像順序
         self.grid_positions = [0, 0, 0, 0]    # 各グリッドの現在位置
         self.selected_grid = -1  # 現在選択されているグリッド（0-3、-1は選択なし）
+        
+        # タグシステムの初期化
+        if TAG_SYSTEM_AVAILABLE:
+            try:
+                self.tag_manager = TagManager()
+            except Exception as e:
+                print(f"タグシステムの初期化に失敗しました: {e}")
+                self.tag_manager = None
+        else:
+            self.tag_manager = None
         
         self.initUI()
 
@@ -903,10 +1093,18 @@ class ImageViewer(QMainWindow):
         # フォルダ履歴タブを作成
         self.history_tab = HistoryTab(self.settings, self)
 
+        # タグタブを作成
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+            self.tag_tab = TagTab(self.tag_manager, self)
+        else:
+            self.tag_tab = None
+
         # タブに追加
         self.tabs.addTab(self.image_tab, "ビュアー")
         self.tabs.addTab(self.favorite_tab, "お気に入り")
         self.tabs.addTab(self.history_tab, "履歴")
+        if self.tag_tab:
+            self.tabs.addTab(self.tag_tab, "🏷️ タグ")
 
         # メインレイアウトにタブを追加
         main_layout = QVBoxLayout()
@@ -930,7 +1128,7 @@ class ImageViewer(QMainWindow):
             try:
                 self.load_images(last_folder)
             except Exception as e:
-                QMessageBox.warning(self, "Error", f"Failed to load images from {last_folder}. Please select another folder.")
+                print(f"フォルダ読み込みエラー: {e}")
                 self.select_folder()
         else:
             self.select_folder()
@@ -1105,10 +1303,12 @@ class ImageViewer(QMainWindow):
     def clear_sidebar_content(self):
         """サイドバーの既存コンテンツをクリア"""
         # 既存のウィジェットを全て削除
-        for i in reversed(range(self.sidebar_content_layout.count())):
-            child = self.sidebar_content_layout.itemAt(i).widget()
-            if child:
-                child.setParent(None)
+        while self.sidebar_content_layout.count() > 0:
+            item = self.sidebar_content_layout.takeAt(0)  # レイアウトからアイテムを取り除く
+            if item:
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()  # ウィジェットを完全に削除
     
     def copy_all_metadata_sidebar(self):
         """サイドバー版の全体コピー機能"""
@@ -1145,6 +1345,27 @@ class ImageViewer(QMainWindow):
         """)
         filename_label.setWordWrap(True)
         self.sidebar_content_layout.addWidget(filename_label)
+        
+        # お気に入りセクション（タグシステムが利用可能な場合）
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+            try:
+                is_favorite = self.tag_manager.get_favorite_status(image_path)
+                favorite_section = self.create_sidebar_favorite_section(is_favorite, image_path)
+                self.sidebar_content_layout.addWidget(favorite_section)
+            except Exception:
+                # お気に入り取得エラーは無視
+                pass
+        
+        # 現在のタグセクション（タグシステムが利用可能な場合）
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+            try:
+                current_tags = self.tag_manager.get_tags(image_path)
+                if current_tags:
+                    tags_section = self.create_sidebar_tags_section(current_tags)
+                    self.sidebar_content_layout.addWidget(tags_section)
+            except Exception:
+                # タグ取得エラーは無視
+                pass
         
         # AI生成画像データがある場合
         if parsed_data['has_ai_data']:
@@ -1206,6 +1427,246 @@ class ImageViewer(QMainWindow):
         
         # スペーサーを追加
         self.sidebar_content_layout.addStretch()
+    
+    def create_sidebar_favorite_section(self, is_favorite, image_path):
+        """サイドバー用のお気に入りセクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #2d2d30;
+                border: 1px solid #555555;
+                border-radius: 6px;
+                margin: 5px 0px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
+        
+        # ヘッダー
+        header_layout = QHBoxLayout()
+        
+        star_icon = "⭐" if is_favorite else "☆"
+        status_text = "お気に入り" if is_favorite else "お気に入りなし"
+        
+        header_label = QLabel(f"{star_icon} {status_text}")
+        header_label.setStyleSheet("""
+            QLabel {
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 2px 0px;
+            }
+        """)
+        header_layout.addWidget(header_label)
+        
+        header_layout.addStretch()
+        
+        # トグルボタン
+        toggle_button = QPushButton("☆" if is_favorite else "⭐")
+        toggle_button.setFixedSize(24, 24)
+        toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4a4a4a;
+                border: 1px solid #666666;
+                border-radius: 12px;
+                color: #ffffff;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5a5a5a;
+            }
+            QPushButton:pressed {
+                background-color: #333333;
+            }
+        """)
+        toggle_button.setToolTip("お気に入りを切り替え (Fキー)")
+        toggle_button.clicked.connect(lambda: self.toggle_favorite_status(image_path))
+        
+        header_layout.addWidget(toggle_button)
+        layout.addLayout(header_layout)
+        
+        return frame
+    
+    def create_sidebar_tags_section(self, tags):
+        """サイドバー用のタグセクションを作成"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 6px;
+                margin: 5px 0px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 8)
+        
+        # タイトル行
+        title_layout = QHBoxLayout()
+        
+        # タイトルラベル
+        title_label = QLabel("🏷️ 現在のタグ")
+        title_label.setStyleSheet("""
+            QLabel {
+                color: #4CAF50;
+                font-weight: bold;
+                font-size: 12px;
+            }
+        """)
+        title_layout.addWidget(title_label)
+        
+        # タグ数表示
+        count_label = QLabel(f"({len(tags)}個)")
+        count_label.setStyleSheet("""
+            QLabel {
+                color: #999999;
+                font-size: 10px;
+            }
+        """)
+        title_layout.addWidget(count_label)
+        
+        title_layout.addStretch()
+        
+        # 全コピーボタン
+        copy_all_button = QPushButton("📋")
+        copy_all_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                border: none;
+                color: white;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        copy_all_button.setFixedSize(25, 20)
+        copy_all_button.clicked.connect(lambda: QApplication.clipboard().setText(", ".join(tags)))
+        copy_all_button.setToolTip("全タグをコピー")
+        title_layout.addWidget(copy_all_button)
+        
+        layout.addLayout(title_layout)
+        
+        # タグチップ表示エリア
+        tags_widget = QWidget()
+        tags_layout = QVBoxLayout(tags_widget)
+        tags_layout.setContentsMargins(0, 8, 0, 0)
+        tags_layout.setSpacing(8)
+        
+        # タグを動的フローレイアウトで配置
+        self.arrange_tags_in_flow_layout(tags, tags_layout)
+        
+        layout.addWidget(tags_widget)
+        
+        return frame
+    
+    def create_tag_chip(self, tag):
+        """個別タグのチップを作成"""
+        chip_frame = QFrame()
+        chip_frame.setStyleSheet("""
+            QFrame {
+                background-color: #4CAF50;
+                border: 1px solid #45a049;
+                border-radius: 12px;
+            }
+            QFrame:hover {
+                background-color: #45a049;
+            }
+        """)
+        chip_frame.setFixedHeight(36)
+        
+        # 文字幅に合わせて横幅を調整
+        from PyQt5.QtWidgets import QSizePolicy
+        chip_frame.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        
+        chip_layout = QHBoxLayout(chip_frame)
+        chip_layout.setContentsMargins(8, 0, 8, 0)
+        chip_layout.setSpacing(4)
+        
+        # タグテキスト
+        tag_label = QLabel(tag)
+        tag_label.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 10px;
+                font-weight: bold;
+            }
+        """)
+        chip_layout.addWidget(tag_label)
+        
+        # コピーボタン
+        copy_button = QPushButton("📋")
+        copy_button.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: white;
+                font-size: 11px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                color: #cccccc;
+            }
+        """)
+        copy_button.setFixedSize(16, 16)
+        copy_button.clicked.connect(lambda: QApplication.clipboard().setText(tag))
+        copy_button.setToolTip(f"「{tag}」をコピー")
+        chip_layout.addWidget(copy_button)
+        
+        return chip_frame
+    
+    def arrange_tags_in_flow_layout(self, tags, layout):
+        """タグを動的フローレイアウトで配置"""
+        if not tags:
+            return
+        
+        # サイドバーの利用可能幅を推定（大体300-400px程度）
+        available_width = 280  # padding等を考慮した実際の幅
+        tag_spacing = 8
+        tag_min_width = 50  # 最小タグ幅
+        
+        current_row = None
+        current_row_layout = None
+        current_row_width = 0
+        
+        for tag in tags:
+            # タグの推定幅を計算（文字数 × 10px + padding + ボタン）
+            estimated_width = max(len(tag) * 7 + 32, tag_min_width)  # 10pxフォント×7 + padding + コピーボタン
+            
+            # 新しい行が必要かチェック
+            need_new_row = (current_row is None or 
+                          current_row_width + estimated_width + tag_spacing > available_width)
+            
+            if need_new_row:
+                # 前の行にストレッチを追加
+                if current_row_layout:
+                    current_row_layout.addStretch()
+                
+                # 新しい行を作成
+                current_row = QWidget()
+                current_row_layout = QHBoxLayout(current_row)
+                current_row_layout.setContentsMargins(0, 0, 0, 0)
+                current_row_layout.setSpacing(tag_spacing)
+                current_row_layout.setAlignment(Qt.AlignLeft)
+                layout.addWidget(current_row)
+                current_row_width = 0
+            
+            # タグチップを作成して追加
+            tag_chip = self.create_tag_chip(tag)
+            current_row_layout.addWidget(tag_chip)
+            current_row_width += estimated_width + tag_spacing
+        
+        # 最後の行にストレッチを追加
+        if current_row_layout:
+            current_row_layout.addStretch()
     
     def create_sidebar_section(self, title, content, tags):
         """サイドバー用のセクションを作成"""
@@ -1648,10 +2109,9 @@ class ImageViewer(QMainWindow):
             self.settings.setValue("last_folder", folder_path)
             self.history_tab.update_folder_history(folder_path)
         except Exception as e:
-            print(f"Error: {e}")  # エラーの内容を出力
-            QMessageBox.warning(self, "Error",
-                                f"Failed to load images from {folder_path}. Please select another folder.")
-            self.select_folder()
+            print(f"load_images Error: {e}")  # エラーの内容を出力
+            # フォルダ選択ダイアログは呼び出し元で処理される
+            raise  # エラーを再発生させて呼び出し元で処理
 
     def show_image(self):
         if self.display_mode == 'single':
@@ -1926,6 +2386,18 @@ class ImageViewer(QMainWindow):
             # Deleteキーで画像を削除
             if self.tabs.currentWidget() == self.image_tab:
                 self.delete_current_image()
+        elif event.key() == Qt.Key_T:
+            # Tキーでタグ編集ダイアログを表示
+            if self.tabs.currentWidget() == self.image_tab and TAG_SYSTEM_AVAILABLE and self.tag_manager:
+                self.show_tag_edit_dialog()
+        elif event.key() == Qt.Key_F:
+            # Fキーでお気に入り状態をトグル
+            if self.tabs.currentWidget() == self.image_tab and TAG_SYSTEM_AVAILABLE and self.tag_manager:
+                self.toggle_favorite_status()
+        elif event.key() == Qt.Key_A:
+            # Aキーでプロンプト解析による自動タグ付けを開始
+            if self.tabs.currentWidget() == self.image_tab and TAG_SYSTEM_AVAILABLE and self.tag_manager:
+                self.show_auto_tag_dialog()
 
     def start_slideshow(self):
         self.timer.start((self.combo_box.currentIndex() + 1) * 1000)  # コンボボックスの値を秒単位に変換
@@ -2038,6 +2510,48 @@ class ImageViewer(QMainWindow):
             # メタデータ情報表示メニューを追加
             exif_action = context_menu.addAction("画像メタデータを表示 (E)")
             exif_action.triggered.connect(self.show_exif_info)
+            
+            # お気に入り関連メニュー（タグシステムが利用可能な場合）
+            if TAG_SYSTEM_AVAILABLE and self.tag_manager and self.images:
+                context_menu.addSeparator()
+                current_image_path = self.images[self.current_image_index]
+                try:
+                    is_favorite = self.tag_manager.get_favorite_status(current_image_path)
+                    if is_favorite:
+                        favorite_action = context_menu.addAction("⭐ お気に入りから削除 (F)")
+                    else:
+                        favorite_action = context_menu.addAction("☆ お気に入りに追加 (F)")
+                    favorite_action.triggered.connect(lambda: self.toggle_favorite_status())
+                    
+                    # お気に入り一覧表示メニューを追加
+                    favorites_list_action = context_menu.addAction("⭐ お気に入り一覧")
+                    favorites_list_action.triggered.connect(self.show_favorite_images_dialog)
+                except Exception:
+                    # エラー時はメニューを追加しない
+                    pass
+
+            # タグ関連メニューをサブメニューにまとめる（タグシステムが利用可能な場合）
+            if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+                tag_menu = context_menu.addMenu("🏷️ タグ")
+                
+                # タグ編集
+                tag_edit_action = tag_menu.addAction("✏️ タグを編集 (T)")
+                tag_edit_action.triggered.connect(self.show_tag_edit_dialog)
+                
+                tag_menu.addSeparator()
+                
+                # 自動タグ付け
+                auto_tag_action = tag_menu.addAction("🤖 プロンプト解析で自動タグ付け (A)")
+                auto_tag_action.triggered.connect(self.show_auto_tag_dialog)
+                
+                tag_menu.addSeparator()
+                
+                # 設定メニュー
+                exclude_settings_action = tag_menu.addAction("⚙️ 除外キーワード設定")
+                exclude_settings_action.triggered.connect(self.show_exclude_settings_dialog)
+                
+                mapping_rules_action = tag_menu.addAction("🔧 自動タグルール設定")
+                mapping_rules_action.triggered.connect(self.show_mapping_rules_dialog)
 
             # 区切り線を追加
             context_menu.addSeparator()
@@ -2451,3 +2965,152 @@ class ImageViewer(QMainWindow):
         # メタデータ情報ダイアログを表示
         dialog = ExifInfoDialog(metadata, current_image_path, self)
         dialog.exec_()
+    
+    # お気に入り関連メソッド
+    def toggle_favorite_status(self, image_path=None):
+        """お気に入り状態をトグル"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        if image_path is None:
+            if not self.images:
+                return
+            try:
+                image_path = self.images[self.current_image_index]
+            except (IndexError, TypeError) as e:
+                QMessageBox.warning(self, "エラー", f"画像パスの取得に失敗しました: {e}")
+                return
+        
+        # image_pathの型をチェック
+        if not isinstance(image_path, str):
+            QMessageBox.warning(self, "エラー", f"画像パスが無効です")
+            return
+            
+        if not os.path.exists(image_path):
+            QMessageBox.warning(self, "エラー", f"画像ファイル {image_path} が見つかりません。")
+            return
+        
+        try:
+            # お気に入り状態をトグル
+            result = self.tag_manager.toggle_favorite(image_path)
+            if result:
+                # UIを更新
+                self.update_sidebar_metadata()
+                
+                # 状態を表示
+                is_favorite = self.tag_manager.get_favorite_status(image_path)
+                status = "お気に入りに追加" if is_favorite else "お気に入りから削除"
+                file_name = os.path.basename(image_path)
+                self.show_message(f"✨ 「{file_name}」を{status}しました")
+            else:
+                QMessageBox.warning(self, "エラー", "お気に入り状態の更新に失敗しました。")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"お気に入り更新エラー: {str(e)}")
+    
+    def show_favorite_images_dialog(self):
+        """お気に入り画像の一覧ダイアログを表示"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        try:
+            favorite_images = self.tag_manager.get_favorite_images()
+            if not favorite_images:
+                QMessageBox.information(self, "お気に入り", "お気に入り画像がありません。")
+                return
+            
+            dialog = FavoriteImagesDialog(favorite_images, self.tag_manager, self)
+            if dialog.exec_() == QDialog.Accepted:
+                # 選択された画像があれば表示
+                selected_path = dialog.get_selected_image_path()
+                if selected_path and selected_path in self.images:
+                    self.current_image_index = self.images.index(selected_path)
+                    self.show_image()
+                    self.update_sidebar_metadata()
+                    
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"お気に入り一覧表示エラー: {str(e)}")
+    
+    def show_tag_edit_dialog(self):
+        """現在の画像のタグ編集ダイアログを表示"""
+        if not self.images:
+            QMessageBox.warning(self, "エラー", "表示する画像がありません。")
+            return
+        
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        current_image_path = self.images[self.current_image_index]
+        if not os.path.exists(current_image_path):
+            QMessageBox.warning(self, "エラー", f"画像ファイル {current_image_path} が見つかりません。")
+            return
+        
+        try:
+            # タグ編集ダイアログを作成・表示
+            tag_dialog = TagEditDialog(current_image_path, self.tag_manager, self)
+            if tag_dialog.exec_() == QDialog.Accepted:
+                # タグが更新された場合、サイドバーも更新
+                self.update_sidebar_metadata()
+                
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"タグ編集ダイアログの表示に失敗しました: {str(e)}")
+    
+    def show_auto_tag_dialog(self):
+        """プロンプト解析による自動タグ付けダイアログを表示"""
+        if not self.images:
+            QMessageBox.warning(self, "エラー", "画像リストが空です。フォルダを選択してから実行してください。")
+            return
+        
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        try:
+            # 現在の画像リストを自動タグ付けダイアログに渡す
+            show_auto_tag_dialog(
+                self.images,
+                self.get_exif_data,  # メタデータ取得用メソッドを渡す
+                self.tag_manager,
+                self
+            )
+            # サイドバー更新は AutoTagDialog 内で実行される
+            
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"自動タグ付けダイアログの表示に失敗しました: {str(e)}")
+    
+    def show_exclude_settings_dialog(self):
+        """自動タグ除外設定ダイアログを表示"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        try:
+            # AutoTagAnalyzerを初期化
+            from auto_tag_analyzer import AutoTagAnalyzer
+            analyzer = AutoTagAnalyzer()
+            
+            # 除外設定ダイアログを表示
+            show_exclude_settings_dialog(analyzer, self)
+            
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"除外設定ダイアログの表示に失敗しました: {str(e)}")
+    
+    def show_mapping_rules_dialog(self):
+        """自動タグルール設定ダイアログを表示"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        try:
+            # AutoTagAnalyzerを初期化
+            from auto_tag_analyzer import AutoTagAnalyzer
+            analyzer = AutoTagAnalyzer()
+            
+            # ルール設定ダイアログを表示
+            show_mapping_rules_dialog(analyzer, self)
+            
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"ルール設定ダイアログの表示に失敗しました: {str(e)}")
