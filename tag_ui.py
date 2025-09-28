@@ -1054,8 +1054,21 @@ class AutoTagWorker(QThread):
         self.completed_count = 0
         self.total_count = len(image_paths)
         
-        # CPUコア数に基づいて最適なワーカー数を決定（最大8個）
-        self.max_workers = min(8, max(2, multiprocessing.cpu_count() - 1))
+        # アダプティブ並列処理：データ量とCPU性能に基づいて最適化
+        cpu_cores = multiprocessing.cpu_count()
+        
+        # 少量データは単一スレッド（オーバーヘッド回避）
+        if self.total_count < 10:
+            self.max_workers = 1
+            print(f"[最適化] 少量データ({self.total_count}枚)のため単一スレッド処理を使用")
+        # 中量データは控えめな並列処理
+        elif self.total_count < 50:
+            self.max_workers = min(3, max(2, cpu_cores // 2))
+            print(f"[最適化] 中量データ({self.total_count}枚)のため{self.max_workers}スレッド使用")
+        # 大量データは積極的な並列処理
+        else:
+            self.max_workers = min(8, max(2, cpu_cores - 1))
+            print(f"[最適化] 大量データ({self.total_count}枚)のため{self.max_workers}スレッド使用")
     
     def cancel(self):
         """処理をキャンセル"""
@@ -1130,7 +1143,10 @@ class AutoTagWorker(QThread):
                         results[image_path] = []
             
             if not self.is_cancelled:
-                self.progress_updated.emit(self.total_count, f"🚀 並列解析完了! ({self.max_workers}スレッド使用)")
+                if self.max_workers == 1:
+                    self.progress_updated.emit(self.total_count, "✅ 解析完了!")
+                else:
+                    self.progress_updated.emit(self.total_count, f"🚀 並列解析完了! ({self.max_workers}スレッド使用)")
                 self.analysis_completed.emit(results)
                 
         except Exception as e:
@@ -1566,8 +1582,16 @@ class AutoTagDialog(QDialog):
             # 処理開始時刻を記録
             start_time = time.time()
             
-            # 並列処理でタグ適用（最大4スレッド）
-            max_tag_workers = min(4, len(selected_items))
+            # アダプティブタグ適用：データ量に基づいて最適化
+            if len(selected_items) < 5:
+                max_tag_workers = 1
+                print(f"[最適化] 少量適用({len(selected_items)}枚)のため単一スレッド処理を使用")
+            elif len(selected_items) < 20:
+                max_tag_workers = 2
+                print(f"[最適化] 中量適用({len(selected_items)}枚)のため2スレッド使用")
+            else:
+                max_tag_workers = min(4, len(selected_items))
+                print(f"[最適化] 大量適用({len(selected_items)}枚)のため{max_tag_workers}スレッド使用")
             
             # アイテムにインデックスを追加
             indexed_items = [(idx, path, filename) for idx, (path, filename) in enumerate(selected_items)]
@@ -1633,14 +1657,26 @@ class AutoTagDialog(QDialog):
             if was_cancelled:
                 QMessageBox.information(self, "キャンセル", "タグの適用がキャンセルされました。")
             elif applied_count > 0:
-                if is_replace_mode:
-                    message = f"⚡ {applied_count}枚の画像のタグを{total_tags}個の新しい自動タグに置き換えました。\n（最大{max_tag_workers}スレッドで並列処理、処理時間: {elapsed_time:.2f}秒）"
+                # 処理方式の表示を調整
+                if max_tag_workers == 1:
+                    processing_info = f"処理時間: {elapsed_time:.2f}秒"
                 else:
-                    message = f"⚡ {applied_count}枚の画像に{total_tags}個の新しい自動タグを追加しました。\n（最大{max_tag_workers}スレッドで並列処理、処理時間: {elapsed_time:.2f}秒）"
+                    processing_info = f"最大{max_tag_workers}スレッドで並列処理、処理時間: {elapsed_time:.2f}秒"
+                
+                if is_replace_mode:
+                    if max_tag_workers == 1:
+                        message = f"✅ {applied_count}枚の画像のタグを{total_tags}個の新しい自動タグに置き換えました。\n（{processing_info}）"
+                    else:
+                        message = f"⚡ {applied_count}枚の画像のタグを{total_tags}個の新しい自動タグに置き換えました。\n（{processing_info}）"
+                else:
+                    if max_tag_workers == 1:
+                        message = f"✅ {applied_count}枚の画像に{total_tags}個の新しい自動タグを追加しました。\n（{processing_info}）"
+                    else:
+                        message = f"⚡ {applied_count}枚の画像に{total_tags}個の新しい自動タグを追加しました。\n（{processing_info}）"
                 
                 QMessageBox.information(
                     self,
-                    "タグ適用完了",
+                    "タグ適用完了" if max_tag_workers == 1 else "⚡ 並列タグ適用完了",
                     message
                 )
                 # 親ウィンドウのサイドバーを更新（タグが変更されたため）
