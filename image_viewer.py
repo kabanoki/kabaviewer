@@ -1202,6 +1202,28 @@ class ImageViewer(QMainWindow):
         """)
         button_layout.addWidget(self.copy_all_sidebar_button)
         
+        # お気に入り星ボタン（タグシステムが利用可能な場合）
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+            self.favorite_star_button = QPushButton("☆")
+            self.favorite_star_button.setToolTip("お気に入りを切り替え (Fキー)")
+            self.favorite_star_button.clicked.connect(lambda: self.toggle_favorite_status())
+            self.favorite_star_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #555555;
+                    color: white;
+                    border: none;
+                    padding: 5px 8px;
+                    border-radius: 3px;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #666666;
+                }
+            """)
+            button_layout.addWidget(self.favorite_star_button)
+        else:
+            self.favorite_star_button = None
+        
         button_layout.addStretch()
         self.sidebar_layout.addLayout(button_layout)
         
@@ -1346,12 +1368,11 @@ class ImageViewer(QMainWindow):
         filename_label.setWordWrap(True)
         self.sidebar_content_layout.addWidget(filename_label)
         
-        # お気に入りセクション（タグシステムが利用可能な場合）
-        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+        # お気に入り星ボタンの状態を更新（タグシステムが利用可能な場合）
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager and hasattr(self, 'favorite_star_button') and self.favorite_star_button:
             try:
                 is_favorite = self.tag_manager.get_favorite_status(image_path)
-                favorite_section = self.create_sidebar_favorite_section(is_favorite, image_path)
-                self.sidebar_content_layout.addWidget(favorite_section)
+                self.update_favorite_star_button(is_favorite)
             except Exception:
                 # お気に入り取得エラーは無視
                 pass
@@ -1428,68 +1449,49 @@ class ImageViewer(QMainWindow):
         # スペーサーを追加
         self.sidebar_content_layout.addStretch()
     
-    def create_sidebar_favorite_section(self, is_favorite, image_path):
-        """サイドバー用のお気に入りセクションを作成"""
-        frame = QFrame()
-        frame.setFrameStyle(QFrame.Box)
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #2d2d30;
-                border: 1px solid #555555;
-                border-radius: 6px;
-                margin: 5px 0px;
-            }
-        """)
+    def update_favorite_star_button(self, is_favorite):
+        """星ボタンの表示状態を更新"""
+        if not hasattr(self, 'favorite_star_button') or not self.favorite_star_button:
+            return
         
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(5)
+        # ボタンのテキストと色を更新
+        if is_favorite:
+            # お気に入り済み：黄色い星
+            self.favorite_star_button.setText("⭐")
+            self.favorite_star_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #FFD700;
+                    color: black;
+                    border: none;
+                    padding: 5px 8px;
+                    border-radius: 3px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #FFC107;
+                }
+            """)
+        else:
+            # 未お気に入り：グレーの星
+            self.favorite_star_button.setText("☆")
+            self.favorite_star_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #555555;
+                    color: white;
+                    border: none;
+                    padding: 5px 8px;
+                    border-radius: 3px;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #666666;
+                }
+            """)
         
-        # ヘッダー
-        header_layout = QHBoxLayout()
-        
-        star_icon = "⭐" if is_favorite else "☆"
-        status_text = "お気に入り" if is_favorite else "お気に入りなし"
-        
-        header_label = QLabel(f"{star_icon} {status_text}")
-        header_label.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 2px 0px;
-            }
-        """)
-        header_layout.addWidget(header_label)
-        
-        header_layout.addStretch()
-        
-        # トグルボタン
-        toggle_button = QPushButton("☆" if is_favorite else "⭐")
-        toggle_button.setFixedSize(24, 24)
-        toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4a4a4a;
-                border: 1px solid #666666;
-                border-radius: 12px;
-                color: #ffffff;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #5a5a5a;
-            }
-            QPushButton:pressed {
-                background-color: #333333;
-            }
-        """)
-        toggle_button.setToolTip("お気に入りを切り替え (Fキー)")
-        toggle_button.clicked.connect(lambda: self.toggle_favorite_status(image_path))
-        
-        header_layout.addWidget(toggle_button)
-        layout.addLayout(header_layout)
-        
-        return frame
+        # ツールチップも更新
+        tooltip = "お気に入りから削除 (Fキー)" if is_favorite else "お気に入りに追加 (Fキー)"
+        self.favorite_star_button.setToolTip(tooltip)
     
     def create_sidebar_tags_section(self, tags):
         """サイドバー用のタグセクションを作成"""
@@ -2973,9 +2975,12 @@ class ImageViewer(QMainWindow):
             QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
             return
         
-        if image_path is None:
-            if not self.images:
+        # image_pathが無効な値（None、False、空文字列など）の場合は現在の画像を取得
+        if not image_path or not isinstance(image_path, str):
+            if not hasattr(self, 'images') or not self.images:
+                QMessageBox.warning(self, "エラー", "表示する画像がありません。")
                 return
+            
             try:
                 image_path = self.images[self.current_image_index]
             except (IndexError, TypeError) as e:
@@ -2995,11 +3000,17 @@ class ImageViewer(QMainWindow):
             # お気に入り状態をトグル
             result = self.tag_manager.toggle_favorite(image_path)
             if result:
+                # 新しい状態を取得
+                is_favorite = self.tag_manager.get_favorite_status(image_path)
+                
                 # UIを更新
                 self.update_sidebar_metadata()
                 
+                # 星ボタンの状態も更新
+                if hasattr(self, 'favorite_star_button') and self.favorite_star_button:
+                    self.update_favorite_star_button(is_favorite)
+                
                 # 状態を表示
-                is_favorite = self.tag_manager.get_favorite_status(image_path)
                 status = "お気に入りに追加" if is_favorite else "お気に入りから削除"
                 file_name = os.path.basename(image_path)
                 self.show_message(f"✨ 「{file_name}」を{status}しました")
