@@ -1101,7 +1101,7 @@ class ImageViewer(QMainWindow):
 
         # タブに追加
         self.tabs.addTab(self.image_tab, "ビュアー")
-        self.tabs.addTab(self.favorite_tab, "お気に入り")
+        self.tabs.addTab(self.favorite_tab, "登録リスト")
         self.tabs.addTab(self.history_tab, "履歴")
         if self.tag_tab:
             self.tabs.addTab(self.tag_tab, "🏷️ タグ")
@@ -2684,9 +2684,9 @@ class ImageViewer(QMainWindow):
         go_to_slide_action = move_menu.addAction('スライド数指定')
         go_to_slide_action.triggered.connect(self.show_go_to_slide_dialog)
 
-        # [お気に入り]メニュー
-        favorite_menu = menubar.addMenu('お気に入り')
-        add_favorite_action = QAction('お気に入りに追加', self)
+        # [登録リスト]メニュー
+        favorite_menu = menubar.addMenu('登録リスト')
+        add_favorite_action = QAction('登録リストに追加', self)
         add_favorite_action.triggered.connect(self.add_current_folder_to_favorites)
         favorite_menu.addAction(add_favorite_action)
 
@@ -2697,7 +2697,7 @@ class ImageViewer(QMainWindow):
         if current_folder and os.path.exists(current_folder):
             self.favorite_tab.add_to_favorites(current_folder)
         else:
-            QMessageBox.warning(self, "Error", "No valid folder to add to favorites.")
+            QMessageBox.warning(self, "Error", "No valid folder to add to registered list.")
 
     def delete_current_image(self):
         if not self.images:
