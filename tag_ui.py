@@ -10,6 +10,9 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSizePolicy, QProgressBar, QTableWidget, QTableWidgetItem,
                              QHeaderView, QGroupBox, QProgressDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import multiprocessing
 from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QImage
 from tag_manager import TagManager
 from PIL import Image
@@ -1034,7 +1037,7 @@ class ImageViewer(QMainWindow):
 # === 自動タグ付け機能 ===
 
 class AutoTagWorker(QThread):
-    """自動タグ解析のワーカースレッド"""
+    """自動タグ解析のワーカースレッド（並列処理対応）"""
     progress_updated = pyqtSignal(int, str)  # 進捗, メッセージ
     analysis_completed = pyqtSignal(dict)    # 結果
     error_occurred = pyqtSignal(str)         # エラー
@@ -1045,44 +1048,89 @@ class AutoTagWorker(QThread):
         self.metadata_getter_func = metadata_getter_func
         self.analyzer = analyzer
         self.is_cancelled = False
+        
+        # 並列処理用の同期オブジェクト
+        self.progress_lock = threading.Lock()
+        self.completed_count = 0
+        self.total_count = len(image_paths)
+        
+        # CPUコア数に基づいて最適なワーカー数を決定（最大8個）
+        self.max_workers = min(8, max(2, multiprocessing.cpu_count() - 1))
     
     def cancel(self):
         """処理をキャンセル"""
         self.is_cancelled = True
     
+    def analyze_single_image(self, image_path):
+        """単一画像の解析処理"""
+        try:
+            # メタデータ取得
+            metadata = self.metadata_getter_func(image_path)
+            
+            # プロンプトデータを解析
+            prompt_data = self.analyzer._parse_ai_metadata(metadata)
+            
+            # 自動タグを生成
+            suggested_tags = self.analyzer.analyze_prompt_data(prompt_data)
+            
+            # 進捗更新（スレッドセーフ）
+            with self.progress_lock:
+                if not self.is_cancelled:
+                    self.completed_count += 1
+                    filename = os.path.basename(image_path)
+                    self.progress_updated.emit(
+                        self.completed_count, 
+                        f"解析完了: {filename} ({self.completed_count}/{self.total_count})"
+                    )
+            
+            return image_path, sorted(list(suggested_tags))
+            
+        except Exception as e:
+            print(f"解析エラー ({image_path}): {e}")
+            
+            # エラーでも進捗は更新
+            with self.progress_lock:
+                if not self.is_cancelled:
+                    self.completed_count += 1
+                    filename = os.path.basename(image_path)
+                    self.progress_updated.emit(
+                        self.completed_count, 
+                        f"エラー: {filename} ({self.completed_count}/{self.total_count})"
+                    )
+            
+            return image_path, []
+    
     def run(self):
-        """メインの解析処理"""
+        """メインの並列解析処理"""
         try:
             results = {}
-            total = len(self.image_paths)
             
-            for i, image_path in enumerate(self.image_paths):
-                if self.is_cancelled:
-                    break
+            # ThreadPoolExecutorで並列処理
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # すべてのタスクを投入
+                future_to_path = {
+                    executor.submit(self.analyze_single_image, path): path 
+                    for path in self.image_paths
+                }
                 
-                # 進捗更新
-                filename = os.path.basename(image_path)
-                self.progress_updated.emit(i, f"解析中: {filename}")
-                
-                try:
-                    # メタデータ取得
-                    metadata = self.metadata_getter_func(image_path)
+                # 完了したタスクから順次結果を収集
+                for future in as_completed(future_to_path):
+                    if self.is_cancelled:
+                        # キャンセル時は残りのタスクもキャンセル
+                        for remaining_future in future_to_path:
+                            remaining_future.cancel()
+                        break
                     
-                    # プロンプトデータを解析
-                    prompt_data = self.analyzer._parse_ai_metadata(metadata)
-                    
-                    # 自動タグを生成
-                    suggested_tags = self.analyzer.analyze_prompt_data(prompt_data)
-                    
-                    # 結果を保存
-                    results[image_path] = sorted(list(suggested_tags))
-                    
-                except Exception as e:
-                    print(f"解析エラー ({image_path}): {e}")
-                    results[image_path] = []
+                    try:
+                        image_path, tags = future.result()
+                        results[image_path] = tags
+                    except Exception as e:
+                        image_path = future_to_path[future]
+                        print(f"タスク実行エラー ({image_path}): {e}")
+                        results[image_path] = []
             
             if not self.is_cancelled:
-                self.progress_updated.emit(total, "解析完了")
+                self.progress_updated.emit(self.total_count, f"🚀 並列解析完了! ({self.max_workers}スレッド使用)")
                 self.analysis_completed.emit(results)
                 
         except Exception as e:
@@ -1459,7 +1507,7 @@ class AutoTagDialog(QDialog):
         
         # プログレスバーを作成・表示
         progress_dialog = QProgressDialog("タグを適用中...", "キャンセル", 0, len(selected_items), self)
-        progress_dialog.setWindowTitle("タグ適用")
+        progress_dialog.setWindowTitle("⚡ 並列タグ適用")
         progress_dialog.setModal(True)
         progress_dialog.setMinimumDuration(0)
         progress_dialog.show()
@@ -1473,20 +1521,17 @@ class AutoTagDialog(QDialog):
         total_tags = 0
         was_cancelled = False
         
-        try:
-            from PyQt5.QtWidgets import QApplication
+        # 並列処理用の同期オブジェクト
+        progress_lock = threading.Lock()
+        completed_count = 0
+        
+        def apply_single_tag(item_data):
+            """単一画像にタグを適用する処理"""
+            nonlocal applied_count, total_tags, completed_count
             
-            for idx, (image_path, filename) in enumerate(selected_items):
-                # キャンセルチェック
-                if progress_dialog.wasCanceled():
-                    was_cancelled = True
-                    break
-                
-                # 進捗情報を更新
-                progress_dialog.setValue(idx)
-                progress_dialog.setLabelText(f"タグを適用中... ({idx + 1}/{len(selected_items)})\n{filename}")
-                QApplication.processEvents()  # UIを更新
-                
+            idx, image_path, filename = item_data
+            
+            try:
                 # タグを適用
                 if image_path in self.analysis_results:
                     tags = self.analysis_results[image_path]
@@ -1495,16 +1540,73 @@ class AutoTagDialog(QDialog):
                             # 置換モード: 既存タグを完全に置き換える
                             success = self.tag_manager.save_tags(image_path, tags)
                             if success:
-                                applied_count += 1
-                                total_tags += len(tags)
+                                with progress_lock:
+                                    applied_count += 1
+                                    total_tags += len(tags)
                         else:
                             # 追加モード: 既存タグに新しいタグを追加
                             existing_tags = self.tag_manager.get_tags(image_path)
                             new_tags = list(set(existing_tags + tags))  # 重複除去
                             success = self.tag_manager.save_tags(image_path, new_tags)
                             if success:
-                                applied_count += 1
-                                total_tags += len(tags)  # 新しく追加されたタグ数
+                                with progress_lock:
+                                    applied_count += 1
+                                    total_tags += len(tags)  # 新しく追加されたタグ数
+                
+                return True
+                
+            except Exception as e:
+                print(f"タグ適用エラー ({filename}): {e}")
+                return False
+        
+        try:
+            from PyQt5.QtWidgets import QApplication
+            import time
+            
+            # 処理開始時刻を記録
+            start_time = time.time()
+            
+            # 並列処理でタグ適用（最大4スレッド）
+            max_tag_workers = min(4, len(selected_items))
+            
+            # アイテムにインデックスを追加
+            indexed_items = [(idx, path, filename) for idx, (path, filename) in enumerate(selected_items)]
+            
+            with ThreadPoolExecutor(max_workers=max_tag_workers) as executor:
+                # すべてのタスクを投入
+                future_to_item = {
+                    executor.submit(apply_single_tag, item): item 
+                    for item in indexed_items
+                }
+                
+                # 完了したタスクから順次結果を収集
+                for future in as_completed(future_to_item):
+                    # キャンセルチェック
+                    if progress_dialog.wasCanceled():
+                        was_cancelled = True
+                        # 残りのタスクをキャンセル
+                        for remaining_future in future_to_item:
+                            remaining_future.cancel()
+                        break
+                    
+                    # 進捗更新
+                    with progress_lock:
+                        completed_count += 1
+                    
+                    # UI更新
+                    item_data = future_to_item[future]
+                    idx, _, filename = item_data
+                    progress_dialog.setValue(completed_count)
+                    progress_dialog.setLabelText(f"⚡ 並列適用中... ({completed_count}/{len(selected_items)})\n{filename}")
+                    QApplication.processEvents()
+                    
+                    # タスクの結果をチェック
+                    try:
+                        success = future.result()
+                        if not success:
+                            print(f"タグ適用失敗: {filename}")
+                    except Exception as e:
+                        print(f"並列タスクエラー ({filename}): {e}")
             
             # プログレスバーを完了状態に（キャンセルされていない場合のみ）
             if not was_cancelled:
@@ -1523,14 +1625,18 @@ class AutoTagDialog(QDialog):
             self.close_button.setEnabled(True)
             self.results_table.setEnabled(True)
             
+            # 処理時間を計算
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
             # 結果を報告
             if was_cancelled:
                 QMessageBox.information(self, "キャンセル", "タグの適用がキャンセルされました。")
             elif applied_count > 0:
                 if is_replace_mode:
-                    message = f"{applied_count}枚の画像のタグを{total_tags}個の新しい自動タグに置き換えました。"
+                    message = f"⚡ {applied_count}枚の画像のタグを{total_tags}個の新しい自動タグに置き換えました。\n（最大{max_tag_workers}スレッドで並列処理、処理時間: {elapsed_time:.2f}秒）"
                 else:
-                    message = f"{applied_count}枚の画像に{total_tags}個の新しい自動タグを追加しました。"
+                    message = f"⚡ {applied_count}枚の画像に{total_tags}個の新しい自動タグを追加しました。\n（最大{max_tag_workers}スレッドで並列処理、処理時間: {elapsed_time:.2f}秒）"
                 
                 QMessageBox.information(
                     self,
