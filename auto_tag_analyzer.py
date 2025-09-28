@@ -206,11 +206,19 @@ class AutoTagAnalyzer:
         # テキストを小文字に変換して解析
         text_lower = all_text.lower()
         
-        # ユーザー設定のマッピングルールを適用
+        # ユーザー設定のマッピングルールを適用（長いキーワード優先）
         mapping_rules = self.load_mapping_rules()
-        for keyword, tags in mapping_rules.items():
-            if self._simple_keyword_match(keyword.lower(), text_lower):
-                suggested_tags.update(tags)
+        
+        # キーワードを長さ順でソート（長い順）
+        sorted_keywords = sorted(mapping_rules.keys(), key=len, reverse=True)
+        
+        matched_keywords = set()
+        for keyword in sorted_keywords:
+            if self._keyword_matches(keyword.lower(), text_lower):
+                # より長いキーワードが既にマッチしている場合はスキップ
+                if not any(keyword.lower() in longer_keyword for longer_keyword in matched_keywords):
+                    suggested_tags.update(mapping_rules[keyword])
+                    matched_keywords.add(keyword.lower())
         
         return suggested_tags
     
@@ -466,9 +474,124 @@ class AutoTagAnalyzer:
     def get_default_mapping_rules(self) -> Dict[str, List[str]]:
         """デフォルトのマッピングルールを取得"""
         return {
-            # 髪関連
-            "long hair": ["長い髪"],
-            "short hair": ["短い髪"],
+            # 髪関連 - 前髪スタイル
+            "blunt bangs": ["ぱっつん"],
+            "hime cut": ["姫カット"],
+            "diagonal bangs": ["斜めの前髪"],
+            "arched bangs": ["アーチ状の前髪"],
+            "asymmetrical bangs": ["アシンメトリ"],
+            "crossed bangs": ["交差した前髪"],
+            "flipped bangs": ["はねた前髪"],
+            "braided bangs": ["編み込み前髪"],
+            "long bangs": ["長い前髪"],
+            "short bangs": ["短い前髪"],
+            "choppy bangs": ["シースルーバング"],
+            "parted bangs": ["センター分け"],
+            "double parted bangs": ["2ヶ所で分けた前髪"],
+            "hair between eyes": ["両目の間の髪"],
+            "center flap bangs": ["センターに垂れた前髪"],
+            "swept bangs": ["流した前髪"],
+            "bangs pinned back": ["ピン留め前髪"],
+            "hair slicked back": ["後ろに流した髪"],
+            "hair pulled back": ["後ろにまとめる"],
+            "hair over eyes": ["目にかかる髪"],
+            "hair over one eye": ["片目にかかる髪"],
+            "hair over both eyes": ["両目にかかる髪"],
+            "forelocks": ["前髪"],
+            
+            # 髪関連 - 長さ
+            "short hair": ["ショートヘア"],
+            "very short hair": ["ベリーショート"],
+            "pixie cut": ["ピクシーカット"],
+            "bob cut": ["ボブカット"],
+            "medium hair": ["セミロング"],
+            "long hair": ["ロングヘア"],
+            "very long hair": ["ベリーロング"],
+            "absurdly long hair": ["超ロング"],
+            
+            # 髪関連 - ポニーテール
+            "ponytail": ["ポニーテール"],
+            "high ponytail": ["ハイポニー"],
+            "low ponytail": ["ローポニー"],
+            "side ponytail": ["サイドポニー"],
+            "braided ponytail": ["編み込みポニー"],
+            
+            # 髪関連 - ツインテール
+            "short twin tails": ["ショートツイン"],
+            "high twin tails": ["ハイツイン"],
+            "low twin tails": ["ローツイン"],
+            "side twin tails": ["サイドツイン"],
+            "twin tails": ["ツインテール"],
+            "twintails": ["ツインテール"],
+            "short twintails": ["ツインテール"],
+            "high twintails": ["ツインテール"],
+            "low twintails": ["ツインテール"],
+            "side twintails": ["ツインテール"],
+            "pigtails": ["おさげ"],
+            
+            # 髪関連 - お団子・まとめ髪
+            "bun": ["お団子"],
+            "hair bun": ["ヘアバン"],
+            "high bun": ["ハイバン"],
+            "low bun": ["ローバン"],
+            "side bun": ["サイドバン"],
+            "double bun": ["ダブルバン"],
+            "braided bun": ["編み込みバン"],
+            
+            # 髪関連 - 編み込み
+            "low-braided long hair": ["低い位置で結んだ長い三つ編み"],
+            "crown braid": ["クラウンブレイド"],
+            "french braid": ["フレンチブレイド"],
+            "single braid": ["三つ編み"],
+            "twin braids": ["三つ編みツインテール"],
+            "quad braids": ["四つ編み"],
+            "side braids": ["両サイドに編み込み"],
+            "side braid": ["サイドブレイド"],
+            "braided hair rings": ["編み込みリング"],
+            "braid": ["編み込み"],
+            
+            # 髪関連 - ハーフアップ・アレンジ
+            "half updo": ["ハーフアップ"],
+            "half up braid": ["ハーフアップブレイド"],
+            "half up half down braid": ["ハーフアップブレイド"],
+            "two side up": ["ツーサイドアップ"],
+            
+            # 髪関連 - 質感・スタイル
+            "straight hair": ["ストレートヘア"],
+            "wavy hair": ["ウェーブヘア"],
+            "drill hair": ["ドリルヘア"],
+            "ringlets": ["リングレット"],
+            "dreadlocks": ["ドレッドロック"],
+            "cornrows": ["コーンロウ"],
+            
+            # 髪関連 - 特殊部位
+            "ahoge": ["アホ毛"],
+            "dyed ahoge": ["染めアホ毛"],
+            "heart ahoge": ["ハートアホ毛"],
+            "ahoge wag": ["動くアホ毛"],
+            "antenna hair": ["アンテナヘア"],
+            "sidelocks": ["もみあげ"],
+            "hair flaps": ["頭の側面から伸びる毛束"],
+            "flipped hair": ["外はね"],
+            "layered hair": ["レイヤード"],
+            
+            # 髪関連 - 髪色
+            "multicolored hair": ["マルチカラー髪"],
+            "black hair": ["黒髪"],
+            "brown hair": ["茶髪"],
+            "blonde hair": ["金髪"],
+            "silver hair": ["銀髪"],
+            "pink hair": ["ピンク髪"],
+            "red hair": ["赤髪"],
+            "blue hair": ["青髪"],
+            "green hair": ["緑髪"],
+            "yellow hair": ["黄髪"],
+            "gray hair": ["灰髪"],
+            "grey hair": ["灰髪"],
+            "purple hair": ["紫髪"],
+            "orange hair": ["オレンジ髪"],
+            "bronze hair": ["ブロンズ髪"],
+            "white hair": ["白髪"],
             
             # 胸部関連
             "flat chest": ["平らな胸"],
