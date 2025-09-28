@@ -2384,10 +2384,6 @@ class ImageViewer(QMainWindow):
             if self.display_mode == 'grid':
                 self.shuffle_grid_system()
                 self.show_message("グリッドを再シャッフルしました")
-        elif event.key() == Qt.Key_E:
-            # Eキーで画像メタデータ情報表示
-            if self.tabs.currentWidget() == self.image_tab:
-                self.show_exif_info()
         elif event.key() == Qt.Key_S:
             # Sキーでサイドバー切り替え
             if self.tabs.currentWidget() == self.image_tab:
@@ -2516,28 +2512,17 @@ class ImageViewer(QMainWindow):
 
             # 区切り線を追加
             context_menu.addSeparator()
-
-            # メタデータ情報表示メニューを追加
-            exif_action = context_menu.addAction("画像メタデータを表示 (E)")
-            exif_action.triggered.connect(self.show_exif_info)
             
-            # お気に入り関連メニュー（タグシステムが利用可能な場合）
-            if TAG_SYSTEM_AVAILABLE and self.tag_manager and self.images:
-                context_menu.addSeparator()
-                current_image_path = self.images[self.current_image_index]
-                try:
-                    is_favorite = self.tag_manager.get_favorite_status(current_image_path)
-                    if is_favorite:
-                        favorite_action = context_menu.addAction("⭐ お気に入りから削除 (F)")
-                    else:
-                        favorite_action = context_menu.addAction("☆ お気に入りに追加 (F)")
-                    favorite_action.triggered.connect(lambda: self.toggle_favorite_status())
-                except Exception:
-                    # エラー時はメニューを追加しない
-                    pass
+            # サイドバー表示/非表示メニューを追加
+            if self.sidebar_visible:
+                sidebar_action = context_menu.addAction("📋 サイドバーを非表示 (S)")
+            else:
+                sidebar_action = context_menu.addAction("📋 サイドバーを表示 (S)")
+            sidebar_action.triggered.connect(self.toggle_sidebar)
 
             # タグ関連メニューをサブメニューにまとめる（タグシステムが利用可能な場合）
             if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+                context_menu.addSeparator()
                 tag_menu = context_menu.addMenu("🏷️ タグ")
                 
                 # タグ編集
@@ -2593,10 +2578,6 @@ class ImageViewer(QMainWindow):
         # [表示]メニュー
         show_menu = menubar.addMenu('表示')
 
-        # メタデータ情報表示アクション
-        exif_action = show_menu.addAction('画像メタデータを表示 (E)')
-        exif_action.triggered.connect(self.show_exif_info)
-        
         # サイドバー切り替えアクション
         sidebar_action = show_menu.addAction('サイドバー切り替え (S)')
         sidebar_action.triggered.connect(self.toggle_sidebar)
@@ -2958,19 +2939,6 @@ class ImageViewer(QMainWindow):
         except Exception as e:
             print(f"メタデータ読み取りエラー: {e}")
             return {}
-    
-    def show_exif_info(self):
-        """現在の画像のメタデータ情報（EXIF・AI生成画像のプロンプト等）を表示"""
-        if not self.images:
-            QMessageBox.warning(self, "エラー", "表示する画像がありません。")
-            return
-        
-        current_image_path = self.images[self.current_image_index]
-        metadata = self.get_exif_data(current_image_path)
-        
-        # メタデータ情報ダイアログを表示
-        dialog = ExifInfoDialog(metadata, current_image_path, self)
-        dialog.exec_()
     
     # お気に入り関連メソッド
     def toggle_favorite_status(self, image_path=None):
