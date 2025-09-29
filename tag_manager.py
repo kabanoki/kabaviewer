@@ -302,7 +302,7 @@ class TagManager:
         return matching_files
     
     def get_all_tags(self):
-        """すべてのユニークタグを取得"""
+        """すべてのユニークタグを取得（優先順序付き）"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -329,7 +329,44 @@ class TagManager:
                 continue
         
         conn.close()
-        return sorted(list(all_tags_set))
+        return self._sort_tags_with_priority(list(all_tags_set))
+    
+    def _sort_tags_with_priority(self, tags_list):
+        """タグを優先順位付きでソート"""
+        # 優先タグを定義（順序も重要）
+        priority_tags = [
+            "騎乗位",
+            "背面騎乗位", 
+            "アマゾン体位",
+            "背後位",
+            "フェラチオ",
+            "足コキ",
+            "手コキ",
+            "側位",
+            "正常位",
+            "パイズリ",
+            "寝バック",
+            "立ちバック"
+        ]
+        
+        # 優先タグとその他のタグに分離
+        priority_found = []
+        other_tags = []
+        
+        for tag in tags_list:
+            if tag in priority_tags:
+                priority_found.append(tag)
+            else:
+                other_tags.append(tag)
+        
+        # 優先タグは指定順序でソート
+        priority_sorted = sorted(priority_found, key=lambda x: priority_tags.index(x))
+        
+        # その他のタグは五十音順でソート
+        other_sorted = sorted(other_tags)
+        
+        # 優先タグ + その他のタグの順で結合
+        return priority_sorted + other_sorted
     
     # プライベートメソッド
     def _get_tags_from_database(self, file_path):
