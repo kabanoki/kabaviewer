@@ -2220,7 +2220,7 @@ class ImageViewer(QMainWindow):
         card_height = heart_size + card_padding * 2
         
         # カードの位置（画像の左下から固定距離）
-        margin_x = 10  # 画像の左端からのマージン（小さくして右に寄せる）
+        margin_x = 30  # 画像の左端からのマージン（小さくして右に寄せる）
         margin_y = 10  # 画像の下端からのマージン（小さくして下に寄せる）
         card_x = image_x + margin_x
         card_y = image_y + image_height - card_height - margin_y
@@ -2920,7 +2920,7 @@ class ImageViewer(QMainWindow):
         # 確認メッセージの表示
         reply = QMessageBox.question(self, '画像を削除',
                                      f'本当に {os.path.basename(current_image_path)} を削除しますか？',
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if reply == QMessageBox.Yes:
             try:
                 os.remove(current_image_path)  # 画像ファイルを削除
