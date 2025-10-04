@@ -254,8 +254,17 @@ class TagManager:
         
         return [(row[0], row[1], row[2]) for row in results]
     
-    def search_by_tags(self, tags, match_all=True):
-        """タグで画像を検索（JSON配列内の完全一致）"""
+    def search_by_tags(self, tags, match_all=True, exclude_tags=None):
+        """タグで画像を検索（JSON配列内の完全一致）
+        
+        Args:
+            tags: 検索対象のタグリスト
+            match_all: True=すべてのタグにマッチ, False=いずれかのタグにマッチ
+            exclude_tags: 除外するタグのリスト（このタグを持つ画像は結果から除外）
+        """
+        if exclude_tags is None:
+            exclude_tags = []
+            
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -283,9 +292,15 @@ class TagManager:
                 # JSONをパースしてタグリストを取得
                 file_tags = json.loads(tags_json) if tags_json else []
                 
+                # 除外タグチェック - 除外タグが含まれている場合はスキップ
+                if exclude_tags and any(exclude_tag in file_tags for exclude_tag in exclude_tags):
+                    continue
+                
                 # マッチング判定
                 is_match = False
-                if match_all:
+                if not tags:  # 検索タグが空の場合は除外タグのチェックのみ
+                    is_match = True
+                elif match_all:
                     # すべての検索タグが画像のタグに含まれているかチェック
                     is_match = all(tag in file_tags for tag in tags)
                 else:
