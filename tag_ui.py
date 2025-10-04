@@ -880,7 +880,7 @@ class FavoritesTab(QWidget):
         
         # お気に入り管理セクション
         manage_layout = QVBoxLayout()
-        manage_layout.addWidget(QLabel("⭐ お気に入り管理"))
+        manage_layout.addWidget(QLabel("♡ お気に入り管理"))
         
         # 更新ボタン
         refresh_button = QPushButton("🔄 リストを更新")
@@ -930,7 +930,7 @@ class FavoritesTab(QWidget):
         
         # お気に入りヘッダーとボタン
         favorites_header_layout = QHBoxLayout()
-        self.favorites_count_label = QLabel("⭐ お気に入り画像")
+        self.favorites_count_label = QLabel("♡ お気に入り画像")
         favorites_header_layout.addWidget(self.favorites_count_label)
         favorites_header_layout.addStretch()  # 空白で押し離す
         
@@ -1070,13 +1070,13 @@ class FavoritesTab(QWidget):
             # リストを更新
             self.favorites_list.clear()
             for img_path, file_name, updated_at in filtered_favorites:
-                item_text = f"⭐ {file_name}"
+                item_text = f"♡ {file_name}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, img_path)
                 self.favorites_list.addItem(item)
             
             # カウント表示を更新
-            count_text = f"⭐ お気に入り画像 ({len(filtered_favorites)}枚)"
+            count_text = f"♡ お気に入り画像 ({len(filtered_favorites)}枚)"
             if self.current_folder_only.isChecked():
                 count_text += " - 現在のフォルダ内"
             self.favorites_count_label.setText(count_text)
@@ -1151,7 +1151,7 @@ class FavoritesTab(QWidget):
                 tags = self.tag_manager.get_tags(file_path)
                 tags_text = f"タグ: {', '.join(tags)}" if tags else "タグ: なし"
                 
-                info_text = f"""⭐ {file_name}
+                info_text = f"""♡ {file_name}
 📏 {orig_width} × {orig_height}
 💾 {file_size_mb:.1f} MB
 🏷️ {tags_text}"""
@@ -2850,7 +2850,7 @@ class FavoriteImagesDialog(QDialog):
     
     def init_ui(self):
         """UIの初期化"""
-        self.setWindowTitle("⭐ お気に入り画像")
+        self.setWindowTitle("♡ お気に入り画像")
         self.setModal(True)
         self.resize(600, 400)
         
@@ -2860,7 +2860,7 @@ class FavoriteImagesDialog(QDialog):
         
         # ヘッダー（動的にカウント）
         existing_count = sum(1 for image_path, _, _ in self.favorite_images if os.path.exists(image_path))
-        header_label = QLabel(f"⭐ お気に入り画像一覧 ({existing_count}枚)")
+        header_label = QLabel(f"♡ お気に入り画像一覧 ({existing_count}枚)")
         header_label.setStyleSheet("""
             QLabel {
                 font-size: 16px;
@@ -2898,7 +2898,7 @@ class FavoriteImagesDialog(QDialog):
         for image_path, file_name, updated_at in self.favorite_images:
             if os.path.exists(image_path):
                 # ファイルが存在する場合のみ追加
-                item_text = f"⭐ {file_name}"
+                item_text = f"♡ {file_name}"
                 if updated_at:
                     item_text += f"\n📅 {updated_at}"
                 
@@ -2945,7 +2945,7 @@ class FavoriteImagesDialog(QDialog):
         button_layout = QHBoxLayout()
         
         # お気に入りから削除ボタン
-        remove_button = QPushButton("☆ お気に入りから削除")
+        remove_button = QPushButton("♡ お気に入りから削除")
         remove_button.setStyleSheet("""
             QPushButton {
                 background-color: #f44336;
