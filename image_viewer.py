@@ -2,8 +2,8 @@
 import os
 import random
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication
-from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon
-from PyQt5.QtCore import Qt, QTimer, QSettings
+from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
+from PyQt5.QtCore import Qt, QTimer, QSettings, QPointF
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
@@ -1108,7 +1108,7 @@ class ImageViewer(QMainWindow):
         if self.tag_tab:
             self.tabs.addTab(self.tag_tab, "🏷️ タグ")
         if self.favorites_tab:
-            self.tabs.addTab(self.favorites_tab, "⭐ お気に入り")
+            self.tabs.addTab(self.favorites_tab, "♡ お気に入り")
 
         # メインレイアウトにタブを追加
         main_layout = QVBoxLayout()
@@ -1206,27 +1206,27 @@ class ImageViewer(QMainWindow):
         """)
         button_layout.addWidget(self.copy_all_sidebar_button)
         
-        # お気に入り星ボタン（タグシステムが利用可能な場合）
+        # お気に入りハートボタン（タグシステムが利用可能な場合）
         if TAG_SYSTEM_AVAILABLE and self.tag_manager:
-            self.favorite_star_button = QPushButton("☆")
-            self.favorite_star_button.setToolTip("お気に入りを切り替え (Fキー)")
-            self.favorite_star_button.clicked.connect(lambda: self.toggle_favorite_status())
-            self.favorite_star_button.setStyleSheet("""
+            self.favorite_heart_button = QPushButton("♡")
+            self.favorite_heart_button.setToolTip("お気に入りを切り替え (Fキー)")
+            self.favorite_heart_button.clicked.connect(lambda: self.toggle_favorite_status())
+            self.favorite_heart_button.setStyleSheet("""
                 QPushButton {
                     background-color: #555555;
-                    color: white;
+                    color: #888888;
                     border: none;
                     padding: 5px 8px;
                     border-radius: 3px;
-                    font-size: 12px;
+                    font-size: 16px;
                 }
                 QPushButton:hover {
                     background-color: #666666;
                 }
             """)
-            button_layout.addWidget(self.favorite_star_button)
+            button_layout.addWidget(self.favorite_heart_button)
         else:
-            self.favorite_star_button = None
+            self.favorite_heart_button = None
         
         button_layout.addStretch()
         self.sidebar_layout.addLayout(button_layout)
@@ -1377,11 +1377,11 @@ class ImageViewer(QMainWindow):
         filename_label.setWordWrap(True)
         self.sidebar_content_layout.addWidget(filename_label)
         
-        # お気に入り星ボタンの状態を更新（タグシステムが利用可能な場合）
-        if TAG_SYSTEM_AVAILABLE and self.tag_manager and hasattr(self, 'favorite_star_button') and self.favorite_star_button:
+        # お気に入りハートボタンの状態を更新（タグシステムが利用可能な場合）
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager and hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
             try:
                 is_favorite = self.tag_manager.get_favorite_status(image_path)
-                self.update_favorite_star_button(is_favorite)
+                self.update_favorite_heart_button(is_favorite)
             except Exception:
                 # お気に入り取得エラーは無視
                 pass
@@ -1458,40 +1458,40 @@ class ImageViewer(QMainWindow):
         # スペーサーを追加
         self.sidebar_content_layout.addStretch()
     
-    def update_favorite_star_button(self, is_favorite):
-        """星ボタンの表示状態を更新"""
-        if not hasattr(self, 'favorite_star_button') or not self.favorite_star_button:
+    def update_favorite_heart_button(self, is_favorite):
+        """ハートボタンの表示状態を更新"""
+        if not hasattr(self, 'favorite_heart_button') or not self.favorite_heart_button:
             return
         
         # ボタンのテキストと色を更新
         if is_favorite:
-            # お気に入り済み：黄色い星
-            self.favorite_star_button.setText("⭐")
-            self.favorite_star_button.setStyleSheet("""
+            # お気に入り済み：赤いハート
+            self.favorite_heart_button.setText("♡")
+            self.favorite_heart_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #FFD700;
-                    color: black;
+                    background-color: #555555;
+                    color: #FF3250;
                     border: none;
                     padding: 5px 8px;
                     border-radius: 3px;
-                    font-size: 12px;
+                    font-size: 16px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
-                    background-color: #FFC107;
+                    background-color: #666666;
                 }
             """)
         else:
-            # 未お気に入り：グレーの星
-            self.favorite_star_button.setText("☆")
-            self.favorite_star_button.setStyleSheet("""
+            # 未お気に入り：グレーのハート
+            self.favorite_heart_button.setText("♡")
+            self.favorite_heart_button.setStyleSheet("""
                 QPushButton {
                     background-color: #555555;
-                    color: white;
+                    color: #888888;
                     border: none;
                     padding: 5px 8px;
                     border-radius: 3px;
-                    font-size: 12px;
+                    font-size: 16px;
                 }
                 QPushButton:hover {
                     background-color: #666666;
@@ -1500,7 +1500,7 @@ class ImageViewer(QMainWindow):
         
         # ツールチップも更新
         tooltip = "お気に入りから削除 (Fキー)" if is_favorite else "お気に入りに追加 (Fキー)"
-        self.favorite_star_button.setToolTip(tooltip)
+        self.favorite_heart_button.setToolTip(tooltip)
     
     def create_sidebar_tags_section(self, tags):
         """サイドバー用のタグセクションを作成"""
@@ -2209,6 +2209,146 @@ class ImageViewer(QMainWindow):
         if self.display_mode == 'grid':
             self.show_image()
 
+    def draw_favorite_heart_on_canvas(self, canvas, heart_size=40, image_x=0, image_y=0, image_width=0, image_height=0):
+        """キャンバス上の画像の左下を基準にハートを描画"""
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # カードのパディング（正方形に近づける）
+        card_padding = 8  # 均等なパディング
+        card_width = heart_size + card_padding * 2
+        card_height = heart_size + card_padding * 2
+        
+        # カードの位置（画像の左下から固定距離）
+        margin_x = 10  # 画像の左端からのマージン（小さくして右に寄せる）
+        margin_y = 10  # 画像の下端からのマージン（小さくして下に寄せる）
+        card_x = image_x + margin_x
+        card_y = image_y + image_height - card_height - margin_y
+        
+        # 半透明の黒いカード背景を描画
+        card_color = QColor(0, 0, 0, 80)  # 黒、透明度80/255
+        painter.setBrush(QBrush(card_color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(card_x, card_y, card_width, card_height, 8, 8)
+        
+        # ハートの中心位置（カード内の中央）
+        center_x = card_x + card_padding + heart_size / 2
+        center_y = card_y + card_padding + heart_size / 2
+        
+        # ハートの形を作成
+        heart_path = QPainterPath()
+        
+        # ハートのサイズ調整
+        scale = heart_size / 40.0
+        
+        # ハートの上部（2つの半円）
+        # 左側の半円
+        heart_path.moveTo(QPointF(center_x, center_y - 5 * scale))
+        heart_path.cubicTo(
+            QPointF(center_x, center_y - 12 * scale),
+            QPointF(center_x - 12 * scale, center_y - 12 * scale),
+            QPointF(center_x - 12 * scale, center_y - 5 * scale)
+        )
+        # 左側の半円の下部
+        heart_path.cubicTo(
+            QPointF(center_x - 12 * scale, center_y + 2 * scale),
+            QPointF(center_x, center_y + 10 * scale),
+            QPointF(center_x, center_y + 15 * scale)
+        )
+        # 右側の半円の下部
+        heart_path.cubicTo(
+            QPointF(center_x, center_y + 10 * scale),
+            QPointF(center_x + 12 * scale, center_y + 2 * scale),
+            QPointF(center_x + 12 * scale, center_y - 5 * scale)
+        )
+        # 右側の半円
+        heart_path.cubicTo(
+            QPointF(center_x + 12 * scale, center_y - 12 * scale),
+            QPointF(center_x, center_y - 12 * scale),
+            QPointF(center_x, center_y - 5 * scale)
+        )
+        
+        heart_path.closeSubpath()
+        
+        # 赤で塗りつぶし、濃い赤の縁取り
+        painter.setBrush(QBrush(QColor(255, 50, 80)))  # 明るい赤
+        painter.setPen(QPen(QColor(200, 20, 50), 2))  # 濃い赤の縁
+        painter.drawPath(heart_path)
+        
+        painter.end()
+        
+        return canvas
+    
+    def draw_favorite_heart(self, pixmap, heart_size=40):
+        """pixmapの左下に半透明の黒いカード背景付きの赤いハートを描画（グリッド用）"""
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # カードのパディング（正方形に近づける）
+        card_padding = 8  # 均等なパディング
+        card_width = heart_size + card_padding * 2
+        card_height = heart_size + card_padding * 2
+        
+        # カードの位置（画像の左下から固定距離）
+        margin_x = 15  # 左端からのマージン（グリッドでは小さめに）
+        margin_y = 5  # 下端からのマージン（グリッドでは小さめに）
+        card_x = margin_x
+        card_y = pixmap.height() - card_height - margin_y
+        
+        # 半透明の黒いカード背景を描画
+        card_color = QColor(0, 0, 0, 80)  # 黒、透明度80/255
+        painter.setBrush(QBrush(card_color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(card_x, card_y, card_width, card_height, 8, 8)
+        
+        # ハートの中心位置（カード内の中央）
+        center_x = card_x + card_padding + heart_size / 2
+        center_y = card_y + card_padding + heart_size / 2
+        
+        # ハートの形を作成
+        heart_path = QPainterPath()
+        
+        # ハートのサイズ調整
+        scale = heart_size / 40.0
+        
+        # ハートの上部（2つの半円）
+        # 左側の半円
+        heart_path.moveTo(QPointF(center_x, center_y - 5 * scale))
+        heart_path.cubicTo(
+            QPointF(center_x, center_y - 12 * scale),
+            QPointF(center_x - 12 * scale, center_y - 12 * scale),
+            QPointF(center_x - 12 * scale, center_y - 5 * scale)
+        )
+        # 左側の半円の下部
+        heart_path.cubicTo(
+            QPointF(center_x - 12 * scale, center_y + 2 * scale),
+            QPointF(center_x, center_y + 10 * scale),
+            QPointF(center_x, center_y + 15 * scale)
+        )
+        # 右側の半円の下部
+        heart_path.cubicTo(
+            QPointF(center_x, center_y + 10 * scale),
+            QPointF(center_x + 12 * scale, center_y + 2 * scale),
+            QPointF(center_x + 12 * scale, center_y - 5 * scale)
+        )
+        # 右側の半円
+        heart_path.cubicTo(
+            QPointF(center_x + 12 * scale, center_y - 12 * scale),
+            QPointF(center_x, center_y - 12 * scale),
+            QPointF(center_x, center_y - 5 * scale)
+        )
+        
+        heart_path.closeSubpath()
+        
+        # 赤で塗りつぶし、濃い赤の縁取り
+        painter.setBrush(QBrush(QColor(255, 50, 80)))  # 明るい赤
+        painter.setPen(QPen(QColor(200, 20, 50), 2))  # 濃い赤の縁
+        painter.drawPath(heart_path)
+        
+        painter.end()
+        
+        return pixmap
+
     def show_image_single(self):
         """シングル表示モード（従来の1枚表示）"""
         if self.images:
@@ -2246,10 +2386,35 @@ class ImageViewer(QMainWindow):
                 # 高品質リサイズ
                 image = image.resize((new_width, new_height), Image.LANCZOS)
                 image = image.convert("RGBA")
-                pixmap = QPixmap.fromImage(QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888))
+                
+                # 表示領域サイズの透明なキャンバスを作成
+                canvas = QPixmap(available_width, available_height)
+                canvas.fill(Qt.transparent)
+                
+                # キャンバスに画像を中央配置で描画
+                painter = QPainter(canvas)
+                image_x = (available_width - new_width) // 2
+                image_y = (available_height - new_height) // 2
+                image_pixmap = QPixmap.fromImage(QImage(image.tobytes("raw", "RGBA"), new_width, new_height, QImage.Format_RGBA8888))
+                painter.drawPixmap(image_x, image_y, image_pixmap)
+                painter.end()
+                
+                # お気に入りの場合はハートを表示（画像の左下を基準）
+                if self.tag_manager:
+                    try:
+                        is_favorite = self.tag_manager.get_favorite_status(image_path)
+                        if is_favorite:
+                            # 画像の位置情報を渡してハートを描画
+                            canvas = self.draw_favorite_heart_on_canvas(canvas, heart_size=25, 
+                                                                        image_x=image_x, 
+                                                                        image_y=image_y, 
+                                                                        image_width=new_width, 
+                                                                        image_height=new_height)
+                    except Exception as e:
+                        print(f"Failed to check favorite status: {e}")
 
                 # ピクセル単位で正確に表示
-                self.single_label.setPixmap(pixmap)
+                self.single_label.setPixmap(canvas)
 
                 self.update_window_title()
             except Exception as e:
@@ -2280,6 +2445,15 @@ class ImageViewer(QMainWindow):
                     w, h = image.size
                     qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
                     pixmap = QPixmap.fromImage(qimage)
+                    
+                    # お気に入りの場合はハートを表示（グリッドでは小さめのハート）
+                    if self.tag_manager:
+                        try:
+                            is_favorite = self.tag_manager.get_favorite_status(image_path)
+                            if is_favorite:
+                                pixmap = self.draw_favorite_heart(pixmap, heart_size=15)
+                        except Exception as e:
+                            print(f"Failed to check favorite status: {e}")
                     
                     # 選択されたグリッドには赤い境界線、その他は通常の境界線
                     # selected_grid が -1 の場合はどのグリッドも選択されていない
@@ -3031,9 +3205,12 @@ class ImageViewer(QMainWindow):
                 # UIを更新
                 self.update_sidebar_metadata()
                 
-                # 星ボタンの状態も更新
-                if hasattr(self, 'favorite_star_button') and self.favorite_star_button:
-                    self.update_favorite_star_button(is_favorite)
+                # ハートボタンの状態も更新
+                if hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
+                    self.update_favorite_heart_button(is_favorite)
+                
+                # 画像を再描画してハートの表示を更新
+                self.show_image()
                 
                 # 状態を表示
                 status = "お気に入りに追加" if is_favorite else "お気に入りから削除"
@@ -3062,7 +3239,7 @@ class ImageViewer(QMainWindow):
             # お気に入りリストを更新
             self.favorites_tab.refresh_favorites()
             
-            self.show_message("⭐ お気に入りタブを表示しました")
+            self.show_message("♡ お気に入りタブを表示しました")
                     
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"お気に入りタブ表示エラー: {str(e)}")
