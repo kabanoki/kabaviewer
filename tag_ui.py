@@ -645,6 +645,12 @@ class TagTab(QWidget):
         self.match_all_checkbox.setChecked(True)
         self.match_all_checkbox.toggled.connect(self.update_search_results)
         search_options_layout.addWidget(self.match_all_checkbox)
+        
+        # お気に入りフィルターチェックボックスを追加
+        self.favorites_only_checkbox = QCheckBox("♡ お気に入りのみ")
+        self.favorites_only_checkbox.setChecked(False)
+        self.favorites_only_checkbox.toggled.connect(self.update_search_results)
+        search_options_layout.addWidget(self.favorites_only_checkbox)
         search_layout.addLayout(search_options_layout)
         
         left_layout.addLayout(search_layout)
@@ -848,8 +854,8 @@ class TagTab(QWidget):
         # タグリストの視覚状態を更新
         self.update_tag_visual_states()
         
-        # 検索タグと除外タグの両方が空の場合は結果をクリア
-        if not search_text and not exclude_text:
+        # 検索タグと除外タグの両方が空で、お気に入りフィルターもオフの場合は結果をクリア
+        if not search_text and not exclude_text and not self.favorites_only_checkbox.isChecked():
             self.results_list.clear()
             return
         
@@ -860,9 +866,10 @@ class TagTab(QWidget):
         exclude_tags = list(self.current_exclude_tags)
         
         match_all = self.match_all_checkbox.isChecked()
+        only_favorites = self.favorites_only_checkbox.isChecked()
         
         try:
-            results = self.tag_manager.search_by_tags(tags, match_all=match_all, exclude_tags=exclude_tags)
+            results = self.tag_manager.search_by_tags(tags, match_all=match_all, exclude_tags=exclude_tags, only_favorites=only_favorites)
             
             self.results_list.clear()
             for file_path in results:

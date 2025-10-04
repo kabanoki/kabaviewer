@@ -254,13 +254,14 @@ class TagManager:
         
         return [(row[0], row[1], row[2]) for row in results]
     
-    def search_by_tags(self, tags, match_all=True, exclude_tags=None):
+    def search_by_tags(self, tags, match_all=True, exclude_tags=None, only_favorites=False):
         """タグで画像を検索（JSON配列内の完全一致）
         
         Args:
             tags: 検索対象のタグリスト
             match_all: True=すべてのタグにマッチ, False=いずれかのタグにマッチ
             exclude_tags: 除外するタグのリスト（このタグを持つ画像は結果から除外）
+            only_favorites: True=お気に入り画像のみを検索対象にする
         """
         if exclude_tags is None:
             exclude_tags = []
@@ -268,16 +269,29 @@ class TagManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # 最新のレコードのみを取得（重複を避ける）
-        cursor.execute('''
-            SELECT DISTINCT file_path, tags 
-            FROM image_tags 
-            WHERE (file_path, updated_at) IN (
-                SELECT file_path, MAX(updated_at) 
+        # SQLクエリにお気に入りフィルターを追加
+        if only_favorites:
+            # お気に入りのみを取得（最新のレコードのみ）
+            cursor.execute('''
+                SELECT DISTINCT file_path, tags 
                 FROM image_tags 
-                GROUP BY file_path
-            )
-        ''')
+                WHERE (file_path, updated_at) IN (
+                    SELECT file_path, MAX(updated_at) 
+                    FROM image_tags 
+                    GROUP BY file_path
+                ) AND is_favorite = 1
+            ''')
+        else:
+            # 最新のレコードのみを取得（重複を避ける）
+            cursor.execute('''  
+                SELECT DISTINCT file_path, tags 
+                FROM image_tags 
+                WHERE (file_path, updated_at) IN (
+                    SELECT file_path, MAX(updated_at) 
+                    FROM image_tags 
+                    GROUP BY file_path
+                )
+            ''')
         all_records = cursor.fetchall()
         conn.close()
         
