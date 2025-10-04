@@ -8,12 +8,12 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGridLayout, QScrollArea, QFrame, QDialog,
                              QDialogButtonBox, QCheckBox, QComboBox, QSpacerItem,
                              QSizePolicy, QProgressBar, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QGroupBox, QProgressDialog)
+                             QHeaderView, QGroupBox, QProgressDialog, QApplication)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QStringListModel
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import multiprocessing
-from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QImage
+from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QImage, QBrush
 from tag_manager import TagManager
 from PIL import Image
 
@@ -560,6 +560,8 @@ class TagTab(QWidget):
         super().__init__()
         self.tag_manager = tag_manager
         self.viewer = viewer
+        self.current_search_tags = set()  # 現在の検索タグ
+        self.current_exclude_tags = set()  # 現在の除外タグ
         self.init_ui()
     
     def init_ui(self):
@@ -573,10 +575,70 @@ class TagTab(QWidget):
         search_layout = QVBoxLayout()
         search_layout.addWidget(QLabel("🔍 タグで検索"))
         
+        # 検索タグ入力行
+        search_input_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("検索したいタグを入力（カンマ区切りで複数指定可能）")
         self.search_input.textChanged.connect(self.update_search_results)
-        search_layout.addWidget(self.search_input)
+        search_input_layout.addWidget(self.search_input)
+        
+        # 検索タグクリアボタン
+        self.search_clear_btn = QPushButton("×")
+        self.search_clear_btn.setMaximumWidth(30)
+        self.search_clear_btn.setToolTip("検索タグをクリア")
+        self.search_clear_btn.clicked.connect(self.clear_search_tags)
+        self.search_clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b6b;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #ff5252;
+            }
+            QPushButton:pressed {
+                background-color: #e53935;
+            }
+        """)
+        search_input_layout.addWidget(self.search_clear_btn)
+        search_layout.addLayout(search_input_layout)
+        
+        # 除外タグ入力行
+        exclude_label = QLabel("🚫 除外するタグ")
+        search_layout.addWidget(exclude_label)
+        
+        exclude_input_layout = QHBoxLayout()
+        self.exclude_input = QLineEdit()
+        self.exclude_input.setPlaceholderText("除外したいタグを入力（カンマ区切りで複数指定可能）")
+        self.exclude_input.textChanged.connect(self.update_search_results)
+        exclude_input_layout.addWidget(self.exclude_input)
+        
+        # 除外タグクリアボタン
+        self.exclude_clear_btn = QPushButton("×")
+        self.exclude_clear_btn.setMaximumWidth(30)
+        self.exclude_clear_btn.setToolTip("除外タグをクリア")
+        self.exclude_clear_btn.clicked.connect(self.clear_exclude_tags)
+        self.exclude_clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b6b;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #ff5252;
+            }
+            QPushButton:pressed {
+                background-color: #e53935;
+            }
+        """)
+        exclude_input_layout.addWidget(self.exclude_clear_btn)
+        search_layout.addLayout(exclude_input_layout)
         
         search_options_layout = QHBoxLayout()
         self.match_all_checkbox = QCheckBox("すべてのタグにマッチ")
@@ -588,8 +650,10 @@ class TagTab(QWidget):
         left_layout.addLayout(search_layout)
         
         # タグ一覧
-        left_layout.addWidget(QLabel("🏷️ すべてのタグ"))
+        left_layout.addWidget(QLabel("🏷️ すべてのタグ（クリック: 検索に追加, Ctrl+クリック: 除外に追加）"))
         self.all_tags_list = QListWidget()
+        # スタイルシートを完全に削除してPythonコードのみで色を管理
+        self.all_tags_list.setStyleSheet("")
         self.load_all_tags()
         self.all_tags_list.itemClicked.connect(self.tag_clicked)
         left_layout.addWidget(self.all_tags_list)
@@ -702,31 +766,103 @@ class TagTab(QWidget):
         all_tags = self.tag_manager.get_all_tags()
         self.all_tags_list.clear()
         self.all_tags_list.addItems(all_tags)
+        self.update_tag_visual_states()
+    
+    def update_tag_visual_states(self):
+        """タグリストの視覚状態を更新"""
+        for i in range(self.all_tags_list.count()):
+            item = self.all_tags_list.item(i)
+            tag_name = item.text()
+            
+            # まず全ての色をリセット
+            item.setBackground(QBrush())
+            item.setForeground(QBrush())
+            
+            if tag_name in self.current_exclude_tags:
+                # 除外タグ: 濃い赤色
+                red_brush = QBrush(QColor(255, 205, 210))  # #ffcdd2
+                item.setBackground(red_brush)
+                item.setForeground(QBrush(QColor(0, 0, 0)))  # 黒
+            elif tag_name in self.current_search_tags:
+                # 検索タグ: 濃い青色
+                blue_brush = QBrush(QColor(144, 202, 249))  # #90caf9
+                item.setBackground(blue_brush)
+                item.setForeground(QBrush(QColor(0, 0, 0)))  # 黒
+            else:
+                # 通常状態: デフォルト色
+                item.setBackground(QBrush(QColor(255, 255, 255)))  # 白
+                item.setForeground(QBrush(QColor(0, 0, 0)))        # 黒
+        
+        # 強制的に再描画
+        self.all_tags_list.update()
     
     def tag_clicked(self, item):
         """タグがクリックされた時の処理"""
         tag_name = item.text()
         current_search = self.search_input.text()
         
-        if current_search:
-            # 既存の検索に追加
-            if tag_name not in current_search.split(', '):
-                self.search_input.setText(f"{current_search}, {tag_name}")
+        # Ctrlキーが押されている場合は除外タグに追加
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers == Qt.ControlModifier:
+            current_exclude = self.exclude_input.text()
+            if current_exclude:
+                # 既存の除外タグに追加
+                if tag_name not in current_exclude.split(', '):
+                    self.exclude_input.setText(f"{current_exclude}, {tag_name}")
+            else:
+                self.exclude_input.setText(tag_name)
         else:
-            self.search_input.setText(tag_name)
+            # 通常の検索タグに追加
+            if current_search:
+                # 既存の検索に追加
+                if tag_name not in current_search.split(', '):
+                    self.search_input.setText(f"{current_search}, {tag_name}")
+            else:
+                self.search_input.setText(tag_name)
+    
+    def clear_search_tags(self):
+        """検索タグをクリア"""
+        self.search_input.clear()
+        # textChangedシグナルで自動的にupdate_search_resultsが呼ばれる
+    
+    def clear_exclude_tags(self):
+        """除外タグをクリア"""
+        self.exclude_input.clear()
+        # textChangedシグナルで自動的にupdate_search_resultsが呼ばれる
     
     def update_search_results(self):
         """検索結果を更新"""
         search_text = self.search_input.text().strip()
-        if not search_text:
+        exclude_text = self.exclude_input.text().strip()
+        
+        # 内部のタグ状態を更新
+        self.current_search_tags = set()
+        self.current_exclude_tags = set()
+        
+        if search_text:
+            self.current_search_tags = set(tag.strip() for tag in search_text.split(',') if tag.strip())
+        
+        if exclude_text:
+            self.current_exclude_tags = set(tag.strip() for tag in exclude_text.split(',') if tag.strip())
+        
+        # タグリストの視覚状態を更新
+        self.update_tag_visual_states()
+        
+        # 検索タグと除外タグの両方が空の場合は結果をクリア
+        if not search_text and not exclude_text:
             self.results_list.clear()
             return
         
-        tags = [tag.strip() for tag in search_text.split(',') if tag.strip()]
+        # 検索タグを解析
+        tags = list(self.current_search_tags)
+        
+        # 除外タグを解析
+        exclude_tags = list(self.current_exclude_tags)
+        
         match_all = self.match_all_checkbox.isChecked()
         
         try:
-            results = self.tag_manager.search_by_tags(tags, match_all=match_all)
+            results = self.tag_manager.search_by_tags(tags, match_all=match_all, exclude_tags=exclude_tags)
             
             self.results_list.clear()
             for file_path in results:
