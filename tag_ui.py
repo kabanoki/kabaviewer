@@ -807,21 +807,31 @@ class TagTab(QWidget):
         tag_name = item.text()
         current_search = self.search_input.text()
         
-        # Ctrlキーが押されている場合は除外タグに追加
+        # Ctrlキーが押されている場合は除外タグに追加/削除
         modifiers = QApplication.keyboardModifiers()
         if modifiers == Qt.ControlModifier:
             current_exclude = self.exclude_input.text()
             if current_exclude:
-                # 既存の除外タグに追加
-                if tag_name not in current_exclude.split(', '):
+                exclude_tags = [tag.strip() for tag in current_exclude.split(',') if tag.strip()]
+                if tag_name in exclude_tags:
+                    # 選択済みのタグを削除
+                    exclude_tags.remove(tag_name)
+                    self.exclude_input.setText(', '.join(exclude_tags))
+                else:
+                    # 新しいタグを追加
                     self.exclude_input.setText(f"{current_exclude}, {tag_name}")
             else:
                 self.exclude_input.setText(tag_name)
         else:
-            # 通常の検索タグに追加
+            # 通常の検索タグに追加/削除
             if current_search:
-                # 既存の検索に追加
-                if tag_name not in current_search.split(', '):
+                search_tags = [tag.strip() for tag in current_search.split(',') if tag.strip()]
+                if tag_name in search_tags:
+                    # 選択済みのタグを削除
+                    search_tags.remove(tag_name)
+                    self.search_input.setText(', '.join(search_tags))
+                else:
+                    # 新しいタグを追加
                     self.search_input.setText(f"{current_search}, {tag_name}")
             else:
                 self.search_input.setText(tag_name)
