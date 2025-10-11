@@ -1,7 +1,10 @@
 # back
 import os
 import random
-from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication
+import zipfile
+import shutil
+import datetime
+from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtCore import Qt, QTimer, QSettings, QPointF
 from PIL import Image
@@ -2128,6 +2131,9 @@ class ImageViewer(QMainWindow):
             # お気に入りタブも更新
             if TAG_SYSTEM_AVAILABLE and self.favorites_tab:
                 self.favorites_tab.update_favorites_list()
+            
+            # ZIP圧縮メニューの状態を更新
+            self.update_zip_menu_state()
         except Exception as e:
             print(f"load_images Error: {e}")  # エラーの内容を出力
             # フォルダ選択ダイアログは呼び出し元で処理される
@@ -2157,6 +2163,9 @@ class ImageViewer(QMainWindow):
             self.tabs.setCurrentWidget(self.image_tab)
             
             self.show_message(f"📋 {description} ({len(self.images)}枚)")
+            
+            # ZIP圧縮メニューの状態を更新
+            self.update_zip_menu_state()
         except Exception as e:
             print(f"load_filtered_images Error: {e}")
             raise
@@ -2801,6 +2810,15 @@ class ImageViewer(QMainWindow):
         file_menu = menubar.addMenu('ファイル')
         select_folder_action = file_menu.addAction('フォルダを選択')
         select_folder_action.triggered.connect(self.select_folder)
+        
+        # 区切り線を追加
+        file_menu.addSeparator()
+        
+        # リストをZIP圧縮メニュー項目を追加
+        zip_images_action = file_menu.addAction('📦 リストをZIP圧縮')
+        zip_images_action.triggered.connect(self.export_images_to_zip)
+        zip_images_action.setEnabled(False)  # 初期状態では無効
+        self.zip_images_action = zip_images_action  # 後で有効/無効を切り替えるために保存
 
         # [表示]メニュー
         show_menu = menubar.addMenu('表示')
@@ -3325,3 +3343,129 @@ class ImageViewer(QMainWindow):
             
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"ルール設定ダイアログの表示に失敗しました: {str(e)}")
+    
+    def export_images_to_zip(self):
+        """現在のリストの画像をZIPファイルに圧縮してダウンロード"""
+        if not hasattr(self, 'images') or not self.images:
+            QMessageBox.warning(self, "エラー", "圧縮する画像がありません。\nフォルダを開くか、タグでフィルタしてください。")
+            return
+        
+        # ZIPファイルの保存先を選択
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # リストの種類に応じてファイル名を設定
+        if hasattr(self, 'list_mode') and self.list_mode == "filter":
+            # フィルタリング結果の場合
+            if hasattr(self, 'filter_description'):
+                default_name = f"filtered_images_{self.filter_description}_{timestamp}.zip"
+            else:
+                default_name = f"filtered_images_{timestamp}.zip"
+        else:
+            # フォルダモードの場合
+            if hasattr(self, 'current_folder') and self.current_folder:
+                folder_name = os.path.basename(self.current_folder)
+                default_name = f"images_from_{folder_name}_{timestamp}.zip"
+            else:
+                default_name = f"images_{timestamp}.zip"
+        
+        # ファイル名から無効な文字を除去
+        import re
+        default_name = re.sub(r'[<>:"/\\|?*]', '_', default_name)
+        
+        # 保存ダイアログを表示
+        zip_file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "ZIPファイルの保存先を選択", 
+            default_name,
+            "ZIP files (*.zip)"
+        )
+        
+        if not zip_file_path:
+            return  # キャンセルされた
+        
+        # プログレスダイアログの設定
+        progress_dialog = QProgressDialog("画像をZIPに圧縮中...", "キャンセル", 0, len(self.images), self)
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)  # すぐに表示
+        progress_dialog.show()
+        
+        try:
+            # ZIPファイルを作成
+            with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                successful_count = 0
+                skipped_count = 0
+                
+                for i, image_path in enumerate(self.images):
+                    # キャンセルボタンが押された場合
+                    if progress_dialog.wasCanceled():
+                        # 作成途中のZIPファイルを削除
+                        try:
+                            os.remove(zip_file_path)
+                        except:
+                            pass
+                        return
+                    
+                    # プログレス更新
+                    progress_dialog.setValue(i)
+                    progress_dialog.setLabelText(f"圧縮中... ({i+1}/{len(self.images)})")
+                    QApplication.processEvents()  # UIを更新
+                    
+                    # ファイルの存在確認
+                    if not os.path.exists(image_path):
+                        skipped_count += 1
+                        continue
+                    
+                    try:
+                        # ファイル名の重複を避けるために番号を付ける
+                        base_name = os.path.basename(image_path)
+                        name, ext = os.path.splitext(base_name)
+                        
+                        # 同名ファイルがある場合は番号を追加
+                        counter = 1
+                        archive_name = base_name
+                        while archive_name in [info.filename for info in zipf.infolist()]:
+                            archive_name = f"{name}_{counter:03d}{ext}"
+                            counter += 1
+                        
+                        # ZIPに追加
+                        zipf.write(image_path, archive_name)
+                        successful_count += 1
+                        
+                    except Exception as e:
+                        print(f"Failed to add {image_path}: {str(e)}")
+                        skipped_count += 1
+                        continue
+                
+                # プログレス完了
+                progress_dialog.setValue(len(self.images))
+            
+            # 結果をメッセージで表示
+            total_files = len(self.images)
+            message = f"📦 ZIP圧縮が完了しました！\n\n"
+            message += f"💾 保存先: {zip_file_path}\n"
+            message += f"✅ 成功: {successful_count} ファイル\n"
+            if skipped_count > 0:
+                message += f"⚠️ スキップ: {skipped_count} ファイル\n"
+            message += f"📊 合計: {total_files} ファイル"
+            
+            QMessageBox.information(self, "圧縮完了", message)
+            
+        except Exception as e:
+            # エラーが発生した場合
+            QMessageBox.critical(self, "エラー", f"ZIP圧縮中にエラーが発生しました:\n{str(e)}")
+            
+            # 作成途中のZIPファイルを削除
+            try:
+                if os.path.exists(zip_file_path):
+                    os.remove(zip_file_path)
+            except:
+                pass
+        
+        finally:
+            progress_dialog.close()
+    
+    def update_zip_menu_state(self):
+        """ZIP圧縮メニューの有効/無効を更新"""
+        if hasattr(self, 'zip_images_action'):
+            has_images = hasattr(self, 'images') and bool(self.images)
+            self.zip_images_action.setEnabled(has_images)
