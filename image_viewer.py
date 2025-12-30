@@ -3394,6 +3394,8 @@ class ImageViewer(QMainWindow):
             with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 successful_count = 0
                 skipped_count = 0
+                permission_errors = []
+                other_errors = []
                 
                 for i, image_path in enumerate(self.images):
                     # キャンセルボタンが押された場合
@@ -3413,6 +3415,13 @@ class ImageViewer(QMainWindow):
                     # ファイルの存在確認
                     if not os.path.exists(image_path):
                         skipped_count += 1
+                        other_errors.append(f"• {os.path.basename(image_path)}: ファイルが存在しません")
+                        continue
+                    
+                    # 読み取り権限の確認
+                    if not os.access(image_path, os.R_OK):
+                        skipped_count += 1
+                        permission_errors.append(f"• {os.path.basename(image_path)}: 読み取り権限がありません")
                         continue
                     
                     try:
@@ -3431,9 +3440,15 @@ class ImageViewer(QMainWindow):
                         zipf.write(image_path, archive_name)
                         successful_count += 1
                         
+                    except PermissionError as e:
+                        print(f"Permission denied for {image_path}: {str(e)}")
+                        skipped_count += 1
+                        permission_errors.append(f"• {os.path.basename(image_path)}: アクセス権限エラー")
+                        continue
                     except Exception as e:
                         print(f"Failed to add {image_path}: {str(e)}")
                         skipped_count += 1
+                        other_errors.append(f"• {os.path.basename(image_path)}: {str(e)}")
                         continue
                 
                 # プログレス完了
@@ -3448,10 +3463,50 @@ class ImageViewer(QMainWindow):
                 message += f"⚠️ スキップ: {skipped_count} ファイル\n"
             message += f"📊 合計: {total_files} ファイル"
             
-            QMessageBox.information(self, "圧縮完了", message)
+            # 権限エラーがある場合は詳細を表示
+            if permission_errors:
+                message += f"\n\n🔒 権限エラー ({len(permission_errors)}件):\n"
+                # 最初の5件のみ表示
+                for error in permission_errors[:5]:
+                    message += f"{error}\n"
+                if len(permission_errors) > 5:
+                    message += f"...他{len(permission_errors) - 5}件\n"
             
+            # その他のエラーがある場合は詳細を表示
+            if other_errors:
+                message += f"\n\n⚠️ その他のエラー ({len(other_errors)}件):\n"
+                # 最初の5件のみ表示
+                for error in other_errors[:5]:
+                    message += f"{error}\n"
+                if len(other_errors) > 5:
+                    message += f"...他{len(other_errors) - 5}件\n"
+            
+            # メッセージタイプを決定
+            if successful_count == 0:
+                QMessageBox.critical(self, "エラー", message)
+            elif skipped_count > 0:
+                QMessageBox.warning(self, "圧縮完了（一部エラー）", message)
+            else:
+                QMessageBox.information(self, "圧縮完了", message)
+            
+        except PermissionError as e:
+            # 権限エラーが発生した場合
+            error_msg = f"ZIPファイルの作成に失敗しました。\n\n"
+            error_msg += f"🔒 権限エラー: {str(e)}\n\n"
+            error_msg += f"以下を確認してください:\n"
+            error_msg += f"• 保存先フォルダへの書き込み権限があるか\n"
+            error_msg += f"• macOSの場合、システム環境設定でアプリに\n"
+            error_msg += f"  適切なアクセス権限が付与されているか"
+            QMessageBox.critical(self, "権限エラー", error_msg)
+            
+            # 作成途中のZIPファイルを削除
+            try:
+                if os.path.exists(zip_file_path):
+                    os.remove(zip_file_path)
+            except:
+                pass
         except Exception as e:
-            # エラーが発生した場合
+            # その他のエラーが発生した場合
             QMessageBox.critical(self, "エラー", f"ZIP圧縮中にエラーが発生しました:\n{str(e)}")
             
             # 作成途中のZIPファイルを削除
