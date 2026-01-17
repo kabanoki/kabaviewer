@@ -397,6 +397,68 @@ class TagManager:
         # 優先タグ + その他のタグの順で結合
         return priority_sorted + other_sorted
     
+    def migrate_file_paths(self, old_prefix, new_prefix):
+        """
+        データベースおよび設定内のファイルパスを一括置換する（移行用）
+        
+        Args:
+            old_prefix (str): 置換前のパスの接頭辞
+            new_prefix (str): 置換後のパスの接頭辞
+        Returns:
+            dict: 影響を受けた各項目の件数
+        """
+        results = {"database": 0, "history": 0, "favorites": 0}
+        
+        # 1. SQLiteデータベースの更新
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE image_tags 
+                SET file_path = REPLACE(file_path, ?, ?)
+                WHERE file_path LIKE ?
+            ''', (old_prefix, new_prefix, f"{old_prefix}%"))
+            results["database"] = cursor.rowcount
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Database migration failed: {e}")
+        finally:
+            conn.close()
+            
+        # 2. QSettings (履歴と登録リスト) の更新
+        # 履歴 (folder_history)
+        history = self.settings.value("folder_history", [])
+        if history:
+            new_history = []
+            changed = False
+            for path in history:
+                if path.startswith(old_prefix):
+                    new_history.append(path.replace(old_prefix, new_prefix, 1))
+                    changed = True
+                    results["history"] += 1
+                else:
+                    new_history.append(path)
+            if changed:
+                self.settings.setValue("folder_history", new_history)
+                
+        # 登録リスト (favorite_folders)
+        favorites = self.settings.value("favorite_folders", [])
+        if favorites:
+            new_favorites = []
+            changed = False
+            for path in favorites:
+                if path.startswith(old_prefix):
+                    new_favorites.append(path.replace(old_prefix, new_prefix, 1))
+                    changed = True
+                    results["favorites"] += 1
+                else:
+                    new_favorites.append(path)
+            if changed:
+                self.settings.setValue("favorite_folders", new_favorites)
+        
+        return results
+    
     # プライベートメソッド
     def _get_tags_from_database(self, file_path):
         """SQLiteデータベースから特定画像のタグを取得"""

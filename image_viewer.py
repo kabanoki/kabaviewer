@@ -4,7 +4,7 @@ import random
 import zipfile
 import shutil
 import datetime
-from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar
+from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtCore import Qt, QTimer, QSettings, QPointF
 from PIL import Image
@@ -1161,6 +1161,8 @@ class ImageViewer(QMainWindow):
 
         self.is_running = False
         self.tag_apply_worker = None  # バックグラウンド適用用
+        self.tag_apply_queue = []  # タグ適用のキュー
+        self.current_queue_index = 0  # 現在処理中のキューインデックス
 
         # 最後に開いたフォルダを開くか、新しく選択する
         last_folder = self.settings.value("last_folder", "")
@@ -3021,6 +3023,30 @@ class ImageViewer(QMainWindow):
         add_favorite_action = QAction('登録リストに追加', self)
         add_favorite_action.triggered.connect(self.add_current_folder_to_favorites)
         favorite_menu.addAction(add_favorite_action)
+        
+        # [タグ]メニュー
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+            tag_menu = menubar.addMenu('🏷️ タグ')
+            
+            # 複数フォルダ一括タグ付け
+            batch_folders_action = QAction('📁 複数フォルダを一括タグ付け', self)
+            batch_folders_action.triggered.connect(self.batch_auto_tag_multiple_folders)
+            tag_menu.addAction(batch_folders_action)
+            
+            tag_menu.addSeparator()
+            
+            # 現在のフォルダをタグ付け
+            current_folder_tag_action = QAction('現在のフォルダをタグ付け', self)
+            current_folder_tag_action.triggered.connect(self.show_auto_tag_dialog)
+            tag_menu.addAction(current_folder_tag_action)
+            
+            tag_menu.addSeparator()
+            
+            # メンテナンス項目
+            maintenance_menu = tag_menu.addMenu('🛠️ メンテナンス')
+            migrate_paths_action = QAction('ファイルパスの一括置換 (移行用)', self)
+            migrate_paths_action.triggered.connect(self.show_migrate_paths_dialog)
+            maintenance_menu.addAction(migrate_paths_action)
 
 
 
@@ -3153,10 +3179,14 @@ class ImageViewer(QMainWindow):
         """アプリケーション終了時にウィンドウサイズと位置を保存"""
         # 実行中のバックグラウンド処理がある場合は確認
         if self.tag_apply_worker and self.tag_apply_worker.isRunning():
+            remaining = len(self.tag_apply_queue) - self.current_queue_index - 1
+            queue_info = f"\n（待機中のリスト: {remaining}件）" if remaining > 0 else ""
+            
             reply = QMessageBox.question(
                 self, '処理中',
-                "現在タグを適用中です。処理を中断して終了しますか？\n"
-                "（「いいえ」を選ぶと、処理完了を待ちます）",
+                f"現在タグを適用中です。{queue_info}\n"
+                "処理を中断して終了しますか？\n"
+                "（「いいえ」を選ぶと、全ての処理完了を待ちます）",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
@@ -3164,13 +3194,20 @@ class ImageViewer(QMainWindow):
             if reply == QMessageBox.Yes:
                 self.tag_apply_worker.cancel()
                 self.tag_apply_worker.wait(2000)  # 最大2秒待機
+                self.tag_apply_queue = []
+                self.current_queue_index = 0
             else:
-                # 完了まで待つ
-                progress = QProgressDialog("残りの処理を完了させています...", None, 0, 0, self)
+                # 全ての処理が完了まで待つ
+                total = len(self.tag_apply_queue)
+                progress = QProgressDialog(f"残りの処理を完了させています... (0/{total})", None, 0, total, self)
                 progress.setWindowModality(Qt.WindowModal)
                 progress.show()
-                while self.tag_apply_worker.isRunning():
+                
+                while self.tag_apply_worker.isRunning() or self.current_queue_index < len(self.tag_apply_queue):
+                    progress.setValue(self.current_queue_index)
+                    progress.setLabelText(f"残りの処理を完了させています... ({self.current_queue_index}/{total})")
                     QApplication.processEvents()
+                
                 progress.close()
 
         # 最終的なウィンドウのジオメトリを保存
@@ -3431,20 +3468,348 @@ class ImageViewer(QMainWindow):
             
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"自動タグ付けダイアログの表示に失敗しました: {str(e)}")
+    
+    def batch_auto_tag_multiple_folders(self):
+        """複数フォルダを一括選択して自動タグ付け"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        
+        # 複数フォルダ選択ダイアログ
+        dialog = QFileDialog(self)
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)  # 複数選択を有効にする
+        
+        # 複数選択を可能にする
+        file_view = dialog.findChild(QListView, "listView")
+        if file_view:
+            file_view.setSelectionMode(QListView.MultiSelection)
+        tree_view = dialog.findChild(QTreeView)
+        if tree_view:
+            tree_view.setSelectionMode(QTreeView.MultiSelection)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            selected_folders = dialog.selectedFiles()
+            
+            if not selected_folders:
+                QMessageBox.warning(self, "エラー", "フォルダが選択されていません。")
+                return
+            
+            # 確認ダイアログ
+            folder_list_text = "\n".join([f"• {os.path.basename(folder)}" for folder in selected_folders])
+            reply = QMessageBox.question(
+                self, "確認",
+                f"以下の{len(selected_folders)}個のフォルダを自動タグ付けキューに追加しますか？\n\n{folder_list_text}\n\n"
+                f"※各フォルダごとに解析→適用が自動的に順次実行されます。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                self._process_batch_folders(selected_folders)
+    
+    def _process_batch_folders(self, folders):
+        """複数フォルダをバッチ処理でキューに追加"""
+        from auto_tag_analyzer import AutoTagAnalyzer
+        
+        # タグ適用モードを選択
+        mode_dialog = QMessageBox(self)
+        mode_dialog.setWindowTitle("タグ適用モード選択")
+        mode_dialog.setText(f"{len(folders)}個のフォルダを一括タグ付けします。\nタグの適用方法を選択してください：")
+        mode_dialog.setIcon(QMessageBox.Question)
+        
+        add_button = mode_dialog.addButton("📝 既存タグに追加", QMessageBox.AcceptRole)
+        replace_button = mode_dialog.addButton("🔄 既存タグを置換", QMessageBox.DestructiveRole)
+        cancel_button = mode_dialog.addButton("キャンセル", QMessageBox.RejectRole)
+        
+        mode_dialog.setDefaultButton(add_button)
+        mode_dialog.exec_()
+        
+        clicked_button = mode_dialog.clickedButton()
+        
+        if clicked_button == cancel_button:
+            return
+        
+        is_replace_mode = (clicked_button == replace_button)
+        
+        analyzer = AutoTagAnalyzer()
+        added_count = 0
+        
+        # 全フォルダの総画像数をカウント
+        total_images = 0
+        folder_image_counts = {}
+        for folder in folders:
+            image_files = self._get_image_files_from_folder(folder)
+            folder_image_counts[folder] = image_files
+            total_images += len(image_files)
+        
+        if total_images == 0:
+            QMessageBox.warning(self, "エラー", "選択されたフォルダに有効な画像が見つかりませんでした。")
+            return
+        
+        # プログレスダイアログを表示（画像単位で進捗表示）
+        progress = QProgressDialog(
+            f"解析準備中...",
+            "キャンセル",
+            0,
+            total_images,
+            self
+        )
+        progress.setWindowTitle("一括解析")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)  # すぐに表示
+        progress.show()
+        QApplication.processEvents()
+        
+        processed_images = 0
+        
+        for folder_idx, folder in enumerate(folders):
+            if progress.wasCanceled():
+                break
+            
+            image_files = folder_image_counts[folder]
+            
+            if not image_files:
+                continue
+            
+            folder_name = os.path.basename(folder)
+            
+            try:
+                # 各画像を解析
+                results = {}
+                for img_idx, image_path in enumerate(image_files):
+                    if progress.wasCanceled():
+                        break
+                    
+                    # 5枚ごとまたは100枚ごとにUIを更新
+                    if img_idx % 5 == 0 or img_idx == len(image_files) - 1:
+                        progress.setValue(processed_images)
+                        progress.setLabelText(
+                            f"📁 {folder_name} ({folder_idx + 1}/{len(folders)})\n"
+                            f"🖼️ {img_idx + 1}/{len(image_files)}枚解析中...\n"
+                            f"全体: {processed_images}/{total_images}"
+                        )
+                        QApplication.processEvents()
+                    
+                    try:
+                        metadata = self.get_exif_data(image_path)
+                        prompt_data = analyzer._parse_ai_metadata(metadata)
+                        suggested_tags = analyzer.analyze_prompt_data(prompt_data)
+                        results[image_path] = sorted(list(suggested_tags))
+                    except Exception as e:
+                        print(f"解析エラー ({image_path}): {e}")
+                        results[image_path] = []
+                    
+                    processed_images += 1
+                
+                if progress.wasCanceled():
+                    break
+                
+                if results:
+                    # キューに追加（選択されたモードを使用）
+                    items = [(path, os.path.basename(path)) for path in results.keys()]
+                    list_name = f"{folder_name} ({len(items)}枚)"
+                    self.start_background_tag_application(items, is_replace_mode, results, list_name)
+                    added_count += 1
+                    
+            except Exception as e:
+                print(f"フォルダ処理エラー ({folder}): {e}")
+                processed_images += len(image_files)
+                continue
+        
+        progress.setValue(total_images)
+        progress.close()
+        
+        mode_text = "🔄 置換モード" if is_replace_mode else "📝 追加モード"
+        
+        if progress.wasCanceled():
+            if added_count > 0:
+                QMessageBox.information(
+                    self, "一括追加（中断）",
+                    f"⚠️ キャンセルされました。\n"
+                    f"✅ {added_count}個のフォルダをキューに追加済みです。\n"
+                    f"モード: {mode_text}"
+                )
+        elif added_count > 0:
+            QMessageBox.information(
+                self, "一括追加完了",
+                f"✅ {added_count}個のフォルダをキューに追加しました。\n"
+                f"📊 合計 {total_images}枚を解析しました。\n"
+                f"モード: {mode_text}\n"
+                f"自動的に順次タグ付けが実行されます。"
+            )
+        else:
+            QMessageBox.warning(self, "追加なし", "有効な画像が見つかりませんでした。")
+    
+    def show_migrate_paths_dialog(self):
+        """ファイルパスの一括置換ダイアログを表示"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            return
+            
+        dialog = QDialog(self)
+        dialog.setWindowTitle("ファイルパスの一括置換")
+        dialog.setMinimumWidth(500)
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel("SSDの移動などでファイルパスが変わった場合に、\nデータベース内のパスを一括で書き換えます。"))
+        
+        form_layout = QGridLayout()
+        
+        old_path_edit = QTextEdit()
+        old_path_edit.setPlaceholderText("/Volumes/SSD/old_path/")
+        old_path_edit.setMaximumHeight(60)
+        
+        new_path_edit = QTextEdit()
+        new_path_edit.setPlaceholderText("/Volumes/HDD/new_path/")
+        new_path_edit.setMaximumHeight(60)
+        
+        form_layout.addWidget(QLabel("置換前（古いパス）:"), 0, 0)
+        form_layout.addWidget(old_path_edit, 0, 1)
+        form_layout.addWidget(QLabel("置換後（新しいパス）:"), 1, 0)
+        form_layout.addWidget(new_path_edit, 1, 1)
+        
+        layout.addLayout(form_layout)
+        
+        # 注意書き
+        warning_label = QLabel("⚠️ 注意: この操作は取り消せません。\n履歴とお気に入りリストのパスも同時に更新されます。")
+        warning_label.setStyleSheet("color: #ff5555; font-weight: bold;")
+        layout.addWidget(warning_label)
+        
+        buttons = QHBoxLayout()
+        run_button = QPushButton("実行")
+        cancel_button = QPushButton("キャンセル")
+        buttons.addWidget(run_button)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
+        
+        def run_migration():
+            old_prefix = old_path_edit.toPlainText().strip()
+            new_prefix = new_path_edit.toPlainText().strip()
+            
+            if not old_prefix or not new_prefix:
+                QMessageBox.warning(dialog, "エラー", "パスを入力してください。")
+                return
+            
+            reply = QMessageBox.question(
+                dialog, "最終確認",
+                f"以下の置換を実行しますか？\n\n前: {old_prefix}\n後: {new_prefix}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                try:
+                    results = self.tag_manager.migrate_file_paths(old_prefix, new_prefix)
+                    
+                    summary = (f"移行が完了しました！\n\n"
+                              f"・データベース: {results['database']}件\n"
+                              f"・履歴: {results['history']}件\n"
+                              f"・お気に入り: {results['favorites']}件")
+                    
+                    QMessageBox.information(dialog, "完了", summary)
+                    dialog.accept()
+                    
+                    # 履歴タブなどをリフレッシュ
+                    if hasattr(self, 'history_tab'):
+                        self.history_tab.refresh_history()
+                    if hasattr(self, 'favorite_tab'):
+                        self.favorite_tab.load_favorites()
+                        
+                except Exception as e:
+                    QMessageBox.critical(dialog, "エラー", f"移行中にエラーが発生しました:\n{str(e)}")
+        
+        run_button.clicked.connect(run_migration)
+        cancel_button.clicked.connect(dialog.reject)
+        
+        dialog.exec_()
 
+    def _get_image_files_from_folder(self, folder):
+        """フォルダから画像ファイルを取得"""
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+        image_files = []
+        
+        try:
+            for filename in os.listdir(folder):
+                if any(filename.lower().endswith(ext) for ext in image_extensions):
+                    image_files.append(os.path.join(folder, filename))
+        except Exception as e:
+            print(f"フォルダ読み込みエラー ({folder}): {e}")
+        
+        return sorted(image_files)
     def cancel_background_process(self):
         """バックグラウンド処理をキャンセル"""
         if self.tag_apply_worker:
+            # キューがある場合は確認
+            if len(self.tag_apply_queue) > 1:
+                remaining = len(self.tag_apply_queue) - self.current_queue_index - 1
+                reply = QMessageBox.question(
+                    self, "キャンセル確認",
+                    f"現在の処理をキャンセルします。\n"
+                    f"待機中の {remaining}件のリストもすべてキャンセルしますか？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.No:
+                    return
+            
             self.tag_apply_worker.cancel()
             self.background_progress_label.setText("キャンセル中...")
             self.bg_cancel_button.setEnabled(False)
+            
+            # キューをクリア
+            self.tag_apply_queue = []
+            self.current_queue_index = 0
 
-    def start_background_tag_application(self, items, is_replace_mode, analysis_results):
-        """バックグラウンドでタグ適用を開始"""
+    def start_background_tag_application(self, items, is_replace_mode, analysis_results, list_name=None):
+        """バックグラウンドでタグ適用を開始（キュー対応）"""
+        # リクエストをキューに追加
+        request = {
+            'items': items,
+            'is_replace_mode': is_replace_mode,
+            'analysis_results': analysis_results,
+            'list_name': list_name or f"リスト ({len(items)}枚)"
+        }
+        
         if self.tag_apply_worker and self.tag_apply_worker.isRunning():
-            QMessageBox.warning(self, "実行中", "既にタグ適用処理が実行中です。")
+            # 既に実行中の場合はキューに追加
+            self.tag_apply_queue.append(request)
+            queue_count = len(self.tag_apply_queue)
+            
+            # キュー追加を通知
+            self.show_message(f"📋 待機リストに追加しました（待機中: {queue_count}件）", 3000)
+            
+            # 進捗ラベルに待機情報を追加
+            current_text = self.background_progress_label.text()
+            if "待機中:" not in current_text:
+                self.background_progress_label.setText(f"{current_text} (待機中: {queue_count}件)")
+            else:
+                # 既に待機情報がある場合は更新
+                import re
+                updated_text = re.sub(r'\(待機中: \d+件\)', f'(待機中: {queue_count}件)', current_text)
+                self.background_progress_label.setText(updated_text)
             return
+        
+        # キューに追加して処理開始
+        self.tag_apply_queue.append(request)
+        self.current_queue_index = 0
+        self._process_next_in_queue()
 
+    def _process_next_in_queue(self):
+        """キューから次のタグ適用リクエストを処理"""
+        if self.current_queue_index >= len(self.tag_apply_queue):
+            # キューが空になった
+            self.tag_apply_queue = []
+            self.current_queue_index = 0
+            return
+        
+        request = self.tag_apply_queue[self.current_queue_index]
+        items = request['items']
+        is_replace_mode = request['is_replace_mode']
+        analysis_results = request['analysis_results']
+        list_name = request['list_name']
+        
         from tag_ui import TagApplyWorker
         
         self.tag_apply_worker = TagApplyWorker(items, self.tag_manager, is_replace_mode, analysis_results)
@@ -3466,7 +3831,13 @@ class ImageViewer(QMainWindow):
         # 表示開始
         self.background_progress_bar.setMaximum(len(items))
         self.background_progress_bar.setValue(0)
-        self.background_progress_label.setText(f"タグ適用開始... (0/{len(items)})")
+        
+        # キュー情報を含むメッセージ
+        queue_info = f"[{self.current_queue_index + 1}/{len(self.tag_apply_queue)}]"
+        remaining = len(self.tag_apply_queue) - self.current_queue_index - 1
+        remaining_info = f" (残り: {remaining}件)" if remaining > 0 else ""
+        
+        self.background_progress_label.setText(f"{queue_info} {list_name} - 開始... (0/{len(items)}){remaining_info}")
         self.background_progress_widget.show()
         
         self.tag_apply_worker.start()
@@ -3474,77 +3845,156 @@ class ImageViewer(QMainWindow):
     def update_background_progress(self, current, message):
         """バックグラウンド処理の進捗を更新"""
         self.background_progress_bar.setValue(current)
-        self.background_progress_label.setText(message)
+        
+        # キュー情報を付加
+        if self.tag_apply_queue:
+            queue_info = f"[{self.current_queue_index + 1}/{len(self.tag_apply_queue)}]"
+            remaining = len(self.tag_apply_queue) - self.current_queue_index - 1
+            remaining_info = f" (残り: {remaining}件)" if remaining > 0 else ""
+            self.background_progress_label.setText(f"{queue_info} {message}{remaining_info}")
+        else:
+            self.background_progress_label.setText(message)
 
     def on_background_apply_completed(self, applied_count, total_tags, elapsed_time, failed_count):
         """バックグラウンド適用完了時の処理"""
-        # ウィンドウを前面に持ってくる（別の仮想デスクトップにいても通知が行くようにする）
-        self.activateWindow()
-        self.raise_()
-        QApplication.alert(self) # Dockのアイコンを跳ねさせて通知
+        # サイドバー更新
+        self.update_sidebar_metadata()
         
-        if failed_count == 0:
-            # 成功時: 進捗エリアを成功色に変更して目立たせる
-            self.background_progress_widget.setStyleSheet("""
-                QWidget {
-                    background-color: #2d5016;
-                    border-top: 2px solid #4CAF50;
-                }
-                QLabel {
-                    color: #ffffff;
-                    font-size: 13px;
-                    font-weight: bold;
-                }
-            """)
-            message = f"✅ {applied_count}枚に{total_tags}個のタグを適用完了 ({elapsed_time:.2f}秒)"
-            self.background_progress_label.setText(message)
-            self.background_progress_bar.setValue(self.background_progress_bar.maximum())
-            self.bg_cancel_button.setText("閉じる")
-            self.bg_cancel_button.setEnabled(True)
+        # 次のキューがあるかチェック
+        self.current_queue_index += 1
+        has_next = self.current_queue_index < len(self.tag_apply_queue)
+        
+        if has_next:
+            # 次のキューがある場合は継続
+            if failed_count == 0:
+                # 成功時はトーストメッセージのみ表示して次へ
+                remaining = len(self.tag_apply_queue) - self.current_queue_index
+                self.show_message(f"✅ 完了！次のリストを処理中... (残り: {remaining}件)", 3000)
+            else:
+                # 失敗がある場合は警告を表示
+                message = (f"⚠️ 一部失敗がありました。\n\n"
+                          f"✅ 成功: {applied_count}枚\n"
+                          f"❌ 失敗: {failed_count}枚\n\n"
+                          f"次のリストの処理を続行します。")
+                QMessageBox.warning(self, "適用完了（一部失敗）", message)
             
-            # ボタン接続を更新
-            try:
-                self.bg_cancel_button.clicked.disconnect()
-            except:
-                pass
+            # 次のキューを処理
+            QTimer.singleShot(500, self._process_next_in_queue)
+        else:
+            # 全てのキューが完了した
+            # ウィンドウを前面に持ってくる
+            self.activateWindow()
+            self.raise_()
+            QApplication.alert(self)
             
-            def close_and_reset():
-                self.background_progress_widget.hide()
-                # スタイルをリセット
+            if failed_count == 0:
+                # 全て成功: 進捗エリアを成功色に変更
                 self.background_progress_widget.setStyleSheet("""
                     QWidget {
-                        background-color: #333333;
-                        border-top: 1px solid #555555;
+                        background-color: #2d5016;
+                        border-top: 2px solid #4CAF50;
                     }
                     QLabel {
                         color: #ffffff;
-                        font-size: 12px;
+                        font-size: 13px;
+                        font-weight: bold;
                     }
                 """)
-            
-            self.bg_cancel_button.clicked.connect(close_and_reset)
-            
-            # 20秒後に自動非表示（以前より長く）
-            QTimer.singleShot(20000, lambda: close_and_reset() if self.background_progress_widget.isVisible() and self.bg_cancel_button.text() == "閉じる" else None)
-        else:
-            # 失敗時: ダイアログを表示
-            self.background_progress_widget.hide()
-            message = (f"⚠️ タグ適用が完了しました。\n\n"
-                      f"✅ 成功: {applied_count}枚（{total_tags}個のタグ）\n"
-                      f"❌ 失敗: {failed_count}枚\n"
-                      f"⏱️ 処理時間: {elapsed_time:.2f}秒\n\n"
-                      f"一部の画像でタグの書き込みに失敗しました。")
-            QMessageBox.warning(self, "適用完了（一部失敗）", message)
-        
-        # サイドバー更新
-        self.update_sidebar_metadata()
+                total_lists = len(self.tag_apply_queue)
+                message = f"✅ 全{total_lists}件のリストが完了！ {applied_count}枚に{total_tags}個のタグを適用 ({elapsed_time:.2f}秒)"
+                self.background_progress_label.setText(message)
+                self.background_progress_bar.setValue(self.background_progress_bar.maximum())
+                self.bg_cancel_button.setText("閉じる")
+                self.bg_cancel_button.setEnabled(True)
+                
+                # ボタン接続を更新
+                try:
+                    self.bg_cancel_button.clicked.disconnect()
+                except:
+                    pass
+                
+                def close_and_reset():
+                    self.background_progress_widget.hide()
+                    self.tag_apply_queue = []
+                    self.current_queue_index = 0
+                    # スタイルをリセット
+                    self.background_progress_widget.setStyleSheet("""
+                        QWidget {
+                            background-color: #333333;
+                            border-top: 1px solid #555555;
+                        }
+                        QLabel {
+                            color: #ffffff;
+                            font-size: 12px;
+                        }
+                    """)
+                
+                self.bg_cancel_button.clicked.connect(close_and_reset)
+                
+                # 20秒後に自動非表示
+                QTimer.singleShot(20000, lambda: close_and_reset() if self.background_progress_widget.isVisible() and self.bg_cancel_button.text() == "閉じる" else None)
+            else:
+                # 失敗あり: ダイアログを表示
+                self.background_progress_widget.hide()
+                self.tag_apply_queue = []
+                self.current_queue_index = 0
+                message = (f"⚠️ 全リストの処理が完了しました。\n\n"
+                          f"✅ 成功: {applied_count}枚（{total_tags}個のタグ）\n"
+                          f"❌ 失敗: {failed_count}枚\n"
+                          f"⏱️ 処理時間: {elapsed_time:.2f}秒\n\n"
+                          f"一部の画像でタグの書き込みに失敗しました。")
+                QMessageBox.warning(self, "適用完了（一部失敗）", message)
 
     def on_background_apply_error(self, error_message, applied_count, failed_count):
         """バックグラウンド適用エラー時の処理"""
+        # サイドバー更新（部分的にでも成功していた場合）
+        if applied_count > 0:
+            self.update_sidebar_metadata()
+        
         # ウィンドウを前面に持ってくる
         self.activateWindow()
         self.raise_()
         QApplication.alert(self)
+        
+        # 次のキューがあるかチェック
+        self.current_queue_index += 1
+        has_next = self.current_queue_index < len(self.tag_apply_queue)
+        
+        # 詳細なエラーメッセージをダイアログで表示
+        if has_next:
+            remaining = len(self.tag_apply_queue) - self.current_queue_index
+            message = (f"タグ適用中にエラーが発生しました:\n{error_message}\n\n"
+                      f"途中経過:\n"
+                      f"✅ 成功: {applied_count}枚\n"
+                      f"❌ 失敗: {failed_count}枚\n\n"
+                      f"残り {remaining}件のリストがあります。\n"
+                      f"処理を続行しますか？")
+            
+            reply = QMessageBox.question(
+                self, "エラー", message,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                # 次のキューを処理
+                QTimer.singleShot(500, self._process_next_in_queue)
+            else:
+                # キューをクリアして終了
+                self._clear_queue_and_reset()
+        else:
+            # 最後のキューでエラー
+            message = (f"タグ適用中にエラーが発生しました:\n{error_message}\n\n"
+                      f"途中経過:\n"
+                      f"✅ 成功: {applied_count}枚\n"
+                      f"❌ 失敗: {failed_count}枚")
+            QMessageBox.critical(self, "エラー", message)
+            self._clear_queue_and_reset()
+    
+    def _clear_queue_and_reset(self):
+        """キューをクリアして進捗エリアをリセット"""
+        self.tag_apply_queue = []
+        self.current_queue_index = 0
         
         # エラー時は進捗エリアを赤色に変更
         self.background_progress_widget.setStyleSheet("""
@@ -3559,7 +4009,7 @@ class ImageViewer(QMainWindow):
             }
         """)
         
-        error_summary = f"❌ エラー発生 - 成功: {applied_count}枚, 失敗: {failed_count}枚"
+        error_summary = f"❌ 処理中断"
         self.background_progress_label.setText(error_summary)
         self.bg_cancel_button.setText("閉じる")
         self.bg_cancel_button.setEnabled(True)
@@ -3585,17 +4035,6 @@ class ImageViewer(QMainWindow):
             """)
         
         self.bg_cancel_button.clicked.connect(close_and_reset)
-        
-        # 詳細なエラーメッセージをダイアログで表示
-        message = (f"タグ適用中にエラーが発生しました:\n{error_message}\n\n"
-                  f"途中経過:\n"
-                  f"✅ 成功: {applied_count}枚\n"
-                  f"❌ 失敗: {failed_count}枚")
-        QMessageBox.critical(self, "エラー", message)
-        
-        # サイドバー更新（部分的にでも成功していた場合）
-        if applied_count > 0:
-            self.update_sidebar_metadata()
     
     def show_exclude_settings_dialog(self):
         """自動タグ除外設定ダイアログを表示"""
