@@ -107,8 +107,8 @@ class HistoryTab(QWidget):
         
         try:
             # フォルダ内の画像ファイルを検索
-            image_files = [f for f in os.listdir(folder_path) 
-                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))]
+            image_files = sorted([f for f in os.listdir(folder_path) 
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))])
             
             if not image_files:
                 self.preview_label.setText("画像ファイルがありません")
@@ -116,19 +116,19 @@ class HistoryTab(QWidget):
             
             # 最初の画像を読み込み
             first_image = os.path.join(folder_path, image_files[0])
-            image = Image.open(first_image)
-            
-            # プレビューサイズに合わせてリサイズ
-            preview_size = (280, 180)  # プレビューエリアより少し小さく
-            image.thumbnail(preview_size, Image.Resampling.LANCZOS)
-            
-            # QPixmapに変換して表示
-            image_rgba = image.convert("RGBA")
-            w, h = image.size
-            qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
-            pixmap = QPixmap.fromImage(qimage)
-            
-            self.preview_label.setPixmap(pixmap)
+            with Image.open(first_image) as img:
+                # プレビューサイズに合わせてリサイズ
+                preview_size = (280, 180)  # プレビューエリアより少し小さく
+                img.thumbnail(preview_size, Image.Resampling.LANCZOS)
+                
+                # QPixmapに変換して表示（バイト配列を変数に保持）
+                image_rgba = img.convert("RGBA")
+                w, h = image_rgba.size
+                image_bytes = image_rgba.tobytes("raw", "RGBA")
+                qimage = QImage(image_bytes, w, h, QImage.Format_RGBA8888).copy()
+                pixmap = QPixmap.fromImage(qimage)
+                
+                self.preview_label.setPixmap(pixmap)
             
         except Exception as e:
             self.preview_label.setText(f"プレビュー読み込みエラー:\n{str(e)}")

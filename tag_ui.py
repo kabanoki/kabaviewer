@@ -912,10 +912,11 @@ class TagTab(QWidget):
         try:
             # 画像を読み込み
             with Image.open(file_path) as pil_image:
-                # QPixmapに変換
+                # QPixmapに変換（バイト配列を変数に保持）
                 image_rgba = pil_image.convert("RGBA")
                 w, h = image_rgba.size
-                qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
+                image_bytes = image_rgba.tobytes("raw", "RGBA")
+                qimage = QImage(image_bytes, w, h, QImage.Format_RGBA8888).copy()
                 original_pixmap = QPixmap.fromImage(qimage)
                 
                 # プレビューラベルのサイズを取得
@@ -1262,10 +1263,11 @@ class FavoritesTab(QWidget):
         try:
             # 画像を読み込み
             with Image.open(file_path) as pil_image:
-                # QPixmapに変換
+                # QPixmapに変換（バイト配列を変数に保持）
                 image_rgba = pil_image.convert("RGBA")
                 w, h = image_rgba.size
-                qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
+                image_bytes = image_rgba.tobytes("raw", "RGBA")
+                qimage = QImage(image_bytes, w, h, QImage.Format_RGBA8888).copy()
                 original_pixmap = QPixmap.fromImage(qimage)
                 
                 # プレビューラベルのサイズを取得

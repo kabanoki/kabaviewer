@@ -23,15 +23,17 @@ except ImportError as e:
 
 class ExifInfoDialog(QDialog):
     """画像メタデータを美しく表示するダイアログ"""
-    def __init__(self, exif_data, image_path, parent=None):
+    def __init__(self, exif_data, image_path, parent=None, parse_only=False):
         super().__init__(parent)
         self.exif_data = exif_data
         self.image_path = image_path
         self.parsed_prompt_data = self.parse_prompt_data()
-        self.init_ui()
+        if not parse_only:
+            self.init_ui()
     
-    def parse_prompt_data(self):
-        """AI生成画像のプロンプトデータを解析して構造化"""
+    @staticmethod
+    def parse_metadata_statically(exif_data):
+        """AI生成画像のプロンプトデータを解析して構造化（静的メソッド版）"""
         parsed_data = {
             'prompt': '',
             'negative_prompt': '',
@@ -43,7 +45,7 @@ class ExifInfoDialog(QDialog):
         
         # AI生成画像のプロンプト情報を探す
         ai_prompt_text = ''
-        for key, value in self.exif_data.items():
+        for key, value in exif_data.items():
             if str(key).startswith('AI_') and isinstance(value, str):
                 ai_prompt_text = value
                 parsed_data['has_ai_data'] = True
@@ -69,34 +71,27 @@ class ExifInfoDialog(QDialog):
                     parsed_data['negative_prompt'] = negative_content
                 continue
             
-            # Hiresプロンプト検出は無効化（解析対象から除外）
+            # Hiresプロンプト検出
             if line.lower().startswith('hires prompt:'):
-                current_section = 'hire'  # セクション変更のみ（内容は無視）
-                # hire_content の処理は行わない（解析対象外）
+                current_section = 'hire'
                 continue
             
-            # パラメータ行検出 (Steps:, Sampler:, CFG scale: 等)
-            # プロンプト内の重み付け要素を除外するための厳密な判定
-            
-            # 括弧で囲まれた重み付け要素を除外（例: "(masterpiece:1.2)", "(straddling:1.5),"）
+            # パラメータ行検出
             is_weight_element = (line.strip().startswith('(') and 
                                (':' in line and 
                                 (line.strip().endswith(')') or line.strip().endswith('),'))))
             
-            # 単純な重み付け要素パターンも除外（コロンの前後が短い単語の場合）
             is_simple_weight = False
             if ':' in line and not is_weight_element:
                 parts = line.strip().split(':')
                 if len(parts) == 2:
                     key_part = parts[0].strip().strip('(').strip()
                     value_part = parts[1].strip().strip(')').strip(',').strip()
-                    # キー部分が短く、値部分が数値っぽい場合は重み付け要素の可能性
                     if (len(key_part.split()) <= 3 and 
                         (value_part.replace('.', '').isdigit() or 
                          value_part in ['1', '2', '3', '4', '5', '0.5', '0.7', '0.8', '0.9', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '2.0'])):
                         is_simple_weight = True
             
-            # 実際のパラメータ行かどうかの判定
             is_actual_param_line = (':' in line and 
                                   not is_weight_element and 
                                   not is_simple_weight and
@@ -109,26 +104,8 @@ class ExifInfoDialog(QDialog):
             
             if is_actual_param_line:
                 current_section = 'parameters'
-                
-                # Hires promptが含まれている場合は抽出
-                if 'hires prompt:' in line.lower():
-                    # Hires promptを抽出する
-                    hires_start = line.lower().find('hires prompt:')
-                    if hires_start != -1:
-                        # Hires prompt: の後を取得
-                        hires_part = line[hires_start + len('hires prompt:'):].strip()
-                        # クォートで囲まれている場合は中身を抽出
-                        if hires_part.startswith('"') and '",' in hires_part:
-                            end_quote = hires_part.find('",')
-                            if end_quote != -1:
-                                # Hires promptの内容は解析対象外のため無視
-                                pass  # hires_contentは保存しない
-                
-                # パラメータを分割して解析（Hires promptの内容を除外）
-                # まずHires promptの内容をマスクして、パラメータ解析から除外
                 line_for_params = line
                 if 'hires prompt:' in line.lower():
-                    # Hires promptの内容（クォートで囲まれた部分）を除外
                     hires_start = line.lower().find('hires prompt:')
                     if hires_start != -1:
                         after_hires = line[hires_start:]
@@ -137,7 +114,6 @@ class ExifInfoDialog(QDialog):
                             remaining = after_hires[quote_start + 1:]
                             if '",' in remaining:
                                 quote_end = remaining.find('",')
-                                # Hires prompt部分を除外した行を作成
                                 before_hires = line[:hires_start]
                                 after_quote = remaining[quote_end + 2:]
                                 line_for_params = before_hires + "Hires prompt: [EXCLUDED]" + after_quote
@@ -145,18 +121,16 @@ class ExifInfoDialog(QDialog):
                 params = line_for_params.split(',')
                 for param in params:
                     param = param.strip()
-                    # より厳密なパラメータ判定
                     if (':' in param and 
                         not param.lower().startswith('hires prompt') and
-                        not param.startswith('\\n') and  # 改行文字で始まるものを除外
-                        not '\\n' in param and  # 改行文字を含むものを除外
-                        not param.startswith('(') and  # 括弧で始まるものを除外
-                        'EXCLUDED' not in param):  # 除外マークされたものを除外
+                        not param.startswith('\\n') and 
+                        not '\\n' in param and 
+                        not param.startswith('(') and 
+                        'EXCLUDED' not in param):
                         try:
                             key, value = param.split(':', 1)
                             key = key.strip()
                             value = value.strip()
-                            # 有効なパラメータキーかチェック
                             valid_keys = ['steps', 'sampler', 'schedule type', 'cfg scale', 'seed', 'size', 
                                         'model hash', 'model', 'vae hash', 'vae', 'denoising strength', 
                                         'clip skip', 'hires upscale', 'hires steps', 'hires upscaler', 
@@ -164,28 +138,20 @@ class ExifInfoDialog(QDialog):
                             if key.lower() in valid_keys:
                                 parsed_data['parameters'][key] = value
                         except ValueError:
-                            pass  # 分割に失敗した場合はスキップ
+                            pass
                 continue
             
-            # 通常のプロンプト内容
-            # プロンプト関連セクションでは、重み付け要素や単語をパラメータとして誤認識しないよう注意
             if current_section == 'prompt':
-                # 括弧で囲まれた重み付け要素や通常のプロンプト要素をプロンプトに追加
                 if parsed_data['prompt']:
                     parsed_data['prompt'] += ' ' + line
                 else:
                     parsed_data['prompt'] = line
             elif current_section == 'negative':
-                # ネガティブプロンプト内の要素
                 if parsed_data['negative_prompt']:
                     parsed_data['negative_prompt'] += ' ' + line
                 else:
                     parsed_data['negative_prompt'] = line
-            elif current_section == 'hire':
-                # Hiresプロンプト内の要素は無視（解析対象外）
-                pass  # 何も処理しない
         
-        # タグ推定
         if 'txt2img' in ai_prompt_text.lower():
             parsed_data['tags'].append('TXT2IMG')
         if 'hires prompt:' in ai_prompt_text.lower() or 'hi-res' in ai_prompt_text.lower():
@@ -196,6 +162,10 @@ class ExifInfoDialog(QDialog):
             parsed_data['tags'].append('COMFYUI')
         
         return parsed_data
+
+    def parse_prompt_data(self):
+        """AI生成画像のプロンプトデータを解析して構造化"""
+        return self.parse_metadata_statically(self.exif_data)
     
     def init_ui(self):
         self.setWindowTitle(f"画像メタデータ情報 - {os.path.basename(self.image_path)}")
@@ -1303,6 +1273,8 @@ class ImageViewer(QMainWindow):
             self.sidebar_widget.setVisible(True)
             self.sidebar_toggle_button.setText("非表示")
             self.sidebar_visible = True
+            # 表示された時に最新のメタデータに更新
+            self.update_sidebar_metadata()
         
         # 設定を保存
         self.settings.setValue("sidebar_visible", self.sidebar_visible)
@@ -1320,9 +1292,8 @@ class ImageViewer(QMainWindow):
         current_image_path = self.images[self.current_image_index]
         metadata = self.get_exif_data(current_image_path)
         
-        # ExifInfoDialogと同じ解析ロジックを使用
-        exif_dialog = ExifInfoDialog(metadata, current_image_path, self)
-        parsed_data = exif_dialog.parsed_prompt_data
+        # UIを作らずに解析ロジックのみを使用
+        parsed_data = ExifInfoDialog.parse_metadata_statically(metadata)
         
         self.populate_sidebar_content(parsed_data, metadata, current_image_path)
     
@@ -1352,9 +1323,59 @@ class ImageViewer(QMainWindow):
         current_image_path = self.images[self.current_image_index]
         metadata = self.get_exif_data(current_image_path)
         
-        # ExifInfoDialogのcopy_all_metadataメソッドと同じロジックを使用
-        exif_dialog = ExifInfoDialog(metadata, current_image_path, self)
-        exif_dialog.copy_all_metadata()
+        # UIを作らずに解析ロジックのみを使用
+        parsed_data = ExifInfoDialog.parse_metadata_statically(metadata)
+        
+        all_text_lines = []
+        
+        # ファイル情報
+        all_text_lines.append(f"ファイル: {os.path.basename(current_image_path)}")
+        all_text_lines.append(f"パス: {current_image_path}")
+        all_text_lines.append("")
+        
+        # AI生成画像情報
+        if parsed_data['has_ai_data']:
+            if parsed_data['prompt']:
+                all_text_lines.append("=== Prompt ===")
+                all_text_lines.append(parsed_data['prompt'])
+                all_text_lines.append("")
+            
+            if parsed_data['negative_prompt']:
+                all_text_lines.append("=== Negative prompt ===")
+                all_text_lines.append(parsed_data['negative_prompt'])
+                all_text_lines.append("")
+            
+            if parsed_data['hire_prompt']:
+                all_text_lines.append("=== Hires prompt ===")
+                all_text_lines.append(parsed_data['hire_prompt'])
+                all_text_lines.append("")
+            
+            if parsed_data['parameters']:
+                all_text_lines.append("=== Parameters ===")
+                for key, value in parsed_data['parameters'].items():
+                    all_text_lines.append(f"{key}: {value}")
+                all_text_lines.append("")
+        
+        # EXIF情報
+        exif_info = {}
+        for key, value in metadata.items():
+            if not str(key).startswith('AI_') and not str(key).startswith('Meta_'):
+                exif_info[key] = value
+        
+        if exif_info:
+            all_text_lines.append("=== EXIF Information ===")
+            for tag_id, value in exif_info.items():
+                tag_name = TAGS.get(tag_id, tag_id)
+                if isinstance(value, bytes):
+                    value_str = f"<バイナリデータ ({len(value)} bytes)>"
+                else:
+                    value_str = str(value)[:100]
+                all_text_lines.append(f"{tag_name}: {value_str}")
+        
+        # クリップボードにコピー
+        full_text = "\n".join(all_text_lines)
+        clipboard = QApplication.clipboard()
+        clipboard.setText(full_text)
         
         # ボタンの一時的な変更でコピー完了を示す
         original_text = self.copy_all_sidebar_button.text()
@@ -2191,8 +2212,9 @@ class ImageViewer(QMainWindow):
         else:
             self.show_image_grid()
         
-        # サイドバーのメタデータも更新
-        self.update_sidebar_metadata()
+        # サイドバーが表示されている場合のみメタデータを更新
+        if self.sidebar_visible:
+            self.update_sidebar_metadata()
 
     def initialize_grid_system(self):
         """4つの独立したランダムグリッドシステムを初期化"""
@@ -2363,50 +2385,55 @@ class ImageViewer(QMainWindow):
         if self.images:
             image_path = self.images[self.current_image_index]
             try:
-                image = Image.open(image_path)
+                with Image.open(image_path) as img:
+                    # 実際の利用可能スペースを計算（サイドバーとマージンを考慮）
+                    total_width = self.width()
+                    total_height = self.height()
+                    
+                    # サイドバーが表示されている場合はその分を差し引く
+                    sidebar_width = 0
+                    if self.sidebar_visible and hasattr(self, 'sidebar_widget'):
+                        sidebar_width = self.sidebar_widget.width()
+                    
+                    # 利用可能な画像表示スペース（マージンも考慮）
+                    available_width = total_width - sidebar_width - 50  # 50pxマージン
+                    available_height = total_height - 150  # タブとメニューバー分を差し引く
+                    
+                    # 最小サイズの保証
+                    available_width = max(400, available_width)
+                    available_height = max(300, available_height)
+                    
+                    image_ratio = img.width / img.height
+                    window_ratio = available_width / available_height
 
-                # 実際の利用可能スペースを計算（サイドバーとマージンを考慮）
-                total_width = self.width()
-                total_height = self.height()
-                
-                # サイドバーが表示されている場合はその分を差し引く
-                sidebar_width = 0
-                if self.sidebar_visible and hasattr(self, 'sidebar_widget'):
-                    sidebar_width = self.sidebar_widget.width()
-                
-                # 利用可能な画像表示スペース（マージンも考慮）
-                available_width = total_width - sidebar_width - 50  # 50pxマージン
-                available_height = total_height - 150  # タブとメニューバー分を差し引く
-                
-                # 最小サイズの保証
-                available_width = max(400, available_width)
-                available_height = max(300, available_height)
-                
-                image_ratio = image.width / image.height
-                window_ratio = available_width / available_height
+                    if window_ratio > image_ratio:
+                        new_height = available_height
+                        new_width = int(available_height * image_ratio)
+                    else:
+                        new_width = available_width
+                        new_height = int(available_width / image_ratio)
 
-                if window_ratio > image_ratio:
-                    new_height = available_height
-                    new_width = int(available_height * image_ratio)
-                else:
-                    new_width = available_width
-                    new_height = int(available_width / image_ratio)
-
-                # 高品質リサイズ
-                image = image.resize((new_width, new_height), Image.LANCZOS)
-                image = image.convert("RGBA")
-                
-                # 表示領域サイズの透明なキャンバスを作成
-                canvas = QPixmap(available_width, available_height)
-                canvas.fill(Qt.transparent)
-                
-                # キャンバスに画像を中央配置で描画
-                painter = QPainter(canvas)
-                image_x = (available_width - new_width) // 2
-                image_y = (available_height - new_height) // 2
-                image_pixmap = QPixmap.fromImage(QImage(image.tobytes("raw", "RGBA"), new_width, new_height, QImage.Format_RGBA8888))
-                painter.drawPixmap(image_x, image_y, image_pixmap)
-                painter.end()
+                    # 高品質リサイズ
+                    image = img.resize((new_width, new_height), Image.LANCZOS)
+                    image_rgba = image.convert("RGBA")
+                    
+                    # バイト配列を変数に保持してGCを防ぐ
+                    image_bytes = image_rgba.tobytes("raw", "RGBA")
+                    
+                    # 表示領域サイズの透明なキャンバスを作成
+                    canvas = QPixmap(available_width, available_height)
+                    canvas.fill(Qt.transparent)
+                    
+                    # キャンバスに画像を中央配置で描画
+                    painter = QPainter(canvas)
+                    image_x = (available_width - new_width) // 2
+                    image_y = (available_height - new_height) // 2
+                    
+                    # QImage作成時にバッファのコピーを確実に保持
+                    qimage = QImage(image_bytes, new_width, new_height, QImage.Format_RGBA8888).copy()
+                    image_pixmap = QPixmap.fromImage(qimage)
+                    painter.drawPixmap(image_x, image_y, image_pixmap)
+                    painter.end()
                 
                 # お気に入りの場合はハートを表示（画像の左下を基準）
                 if self.tag_manager:
@@ -2442,18 +2469,20 @@ class ImageViewer(QMainWindow):
             if 0 <= img_index < len(self.images):
                 try:
                     image_path = self.images[img_index]
-                    image = Image.open(image_path)
-                    
-                    # グリッド用にサイズ調整（小さめ）
-                    label_size = self.grid_labels[i].size()
-                    preview_size = (label_size.width() - 10, label_size.height() - 10)
-                    image.thumbnail(preview_size, Image.Resampling.LANCZOS)
-                    
-                    # QPixmapに変換
-                    image_rgba = image.convert("RGBA")
-                    w, h = image.size
-                    qimage = QImage(image_rgba.tobytes("raw", "RGBA"), w, h, QImage.Format_RGBA8888)
-                    pixmap = QPixmap.fromImage(qimage)
+                    with Image.open(image_path) as img:
+                        # グリッド用にサイズ調整（小さめ）
+                        label_size = self.grid_labels[i].size()
+                        preview_size = (label_size.width() - 10, label_size.height() - 10)
+                        
+                        # 縦横比を維持してリサイズ
+                        img.thumbnail(preview_size, Image.Resampling.LANCZOS)
+                        
+                        # QPixmapに変換（バイト配列を変数に保持）
+                        image_rgba = img.convert("RGBA")
+                        w, h = image_rgba.size
+                        image_bytes = image_rgba.tobytes("raw", "RGBA")
+                        qimage = QImage(image_bytes, w, h, QImage.Format_RGBA8888).copy()
+                        pixmap = QPixmap.fromImage(qimage)
                     
                     # お気に入りの場合はハートを表示（グリッドでは小さめのハート）
                     if self.tag_manager:
