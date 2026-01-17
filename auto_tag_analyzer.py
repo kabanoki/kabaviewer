@@ -231,10 +231,8 @@ class AutoTagAnalyzer:
                 
             keyword_lower = keyword.lower()
             if self._keyword_matches(keyword_lower, text_lower):
-                # より長いキーワードが既にマッチしている場合はスキップ
-                if not any(keyword_lower in longer_keyword for longer_keyword in matched_keywords):
-                    suggested_tags.update(mapping_rules[keyword])
-                    matched_keywords.add(keyword_lower)
+                suggested_tags.update(mapping_rules[keyword])
+                matched_keywords.add(keyword_lower)
         
         return suggested_tags
     
@@ -698,9 +696,9 @@ class AutoTagAnalyzer:
             "long sleeves": ["長袖"],
             "sleeves rolled up": ["袖まくり"],
             "maid": ["メイド"],
-            "maid headdress": ["メイドヘッドドレス"],
+            "maid headdress": ["メイドヘッドドレス", "メイド"],
             "nurse": ["ナース"],
-            "nurse cap": ["ナースキャップ"],
+            "nurse cap": ["ナースキャップ", "ナース"],
             "pantyhose": ["パンティストッキング"],
             "pleated skirt": ["プリーツスカート"],
             "ribbed sweater": ["リブセーター"],
@@ -724,6 +722,8 @@ class AutoTagAnalyzer:
             "virgin killer sweater": ["童貞を殺す服", "セーター"],
             "white shirt": ["白シャツ"],
             "nude": ["裸"],
+            "miko": ["巫女"],
+            "nun": ["修女"],
 
             #肌
             "pale skin": ["白肌"],
@@ -737,6 +737,7 @@ class AutoTagAnalyzer:
             "sun-kissed": ["茶肌"],
 
             # 成人向け体位・行為
+            "nsfw": ["成人向け"],
             "cowgirl position": ["騎乗位"],
             "wariza cowgirl position": ["騎乗位"],
             "reverse cowgirl position": ["騎乗位", "背面騎乗位"],
@@ -751,6 +752,7 @@ class AutoTagAnalyzer:
             "paizuri": ["パイズリ"],
             "prone bone": ["寝バック"],
             "standing doggy": ["立ちバック"],
+            "upright straddle": ["座位"],
             "tentacles": ["触手"],
             "slime": ["スライム"],
         }
