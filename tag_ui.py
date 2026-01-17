@@ -1005,15 +1005,18 @@ class TagTab(QWidget):
         if file_path and os.path.exists(file_path):
             # フォルダを切り替えて画像を表示
             folder_path = os.path.dirname(file_path)
-            self.viewer.load_images(folder_path)
-            
-            # 該当画像を選択
-            if file_path in self.viewer.images:
-                self.viewer.current_image_index = self.viewer.images.index(file_path)
-                self.viewer.show_image()
+            try:
+                self.viewer.load_images(folder_path)
                 
-            # ビューアータブに切り替え
-            self.viewer.tabs.setCurrentWidget(self.viewer.image_tab)
+                # 該当画像を選択
+                if file_path in self.viewer.images:
+                    self.viewer.current_image_index = self.viewer.images.index(file_path)
+                    self.viewer.show_image()
+                    
+                # ビューアータブに切り替え
+                self.viewer.tabs.setCurrentWidget(self.viewer.image_tab)
+            except Exception as e:
+                QMessageBox.warning(self, "エラー", f"フォルダの読み込みに失敗しました:\n{folder_path}\n{str(e)}")
 
 
 class FavoritesTab(QWidget):
@@ -1357,15 +1360,18 @@ class FavoritesTab(QWidget):
         if file_path and os.path.exists(file_path):
             # フォルダを切り替えて画像を表示
             folder_path = os.path.dirname(file_path)
-            self.viewer.load_images(folder_path)
-            
-            # 該当画像を選択
-            if file_path in self.viewer.images:
-                self.viewer.current_image_index = self.viewer.images.index(file_path)
-                self.viewer.show_image()
+            try:
+                self.viewer.load_images(folder_path)
                 
-            # ビューアータブに切り替え
-            self.viewer.tabs.setCurrentWidget(self.viewer.image_tab)
+                # 該当画像を選択
+                if file_path in self.viewer.images:
+                    self.viewer.current_image_index = self.viewer.images.index(file_path)
+                    self.viewer.show_image()
+                    
+                # ビューアータブに切り替え
+                self.viewer.tabs.setCurrentWidget(self.viewer.image_tab)
+            except Exception as e:
+                QMessageBox.warning(self, "エラー", f"フォルダの読み込みに失敗しました:\n{folder_path}\n{str(e)}")
 
 # KabaViewerのメイン統合用関数
 def integrate_tag_system_to_kabaviewer(viewer):

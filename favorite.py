@@ -138,8 +138,11 @@ class FavoriteTab(QWidget):
     def open_selected_folder(self, item):
         folder_path = item.text()
         if folder_path and os.path.exists(folder_path):
-            self.parent.load_images(folder_path)
-            # ビューアータブに自動切り替え
-            self.parent.tabs.setCurrentIndex(0)
+            try:
+                self.parent.load_images(folder_path)
+                # ビューアータブに自動切り替え
+                self.parent.tabs.setCurrentIndex(0)
+            except Exception as e:
+                QMessageBox.warning(self, "エラー", f"フォルダの読み込みに失敗しました:\n{folder_path}\n{str(e)}")
         else:
             QMessageBox.warning(self, "Error", "選択されたフォルダが存在しません")

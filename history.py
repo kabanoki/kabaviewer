@@ -153,9 +153,12 @@ class HistoryTab(QWidget):
             return
         
         self.viewer.stop_slideshow()
-        self.viewer.load_images(folder_path)
-        # ビューアータブに自動切り替え
-        self.viewer.tabs.setCurrentIndex(0)
+        try:
+            self.viewer.load_images(folder_path)
+            # ビューアータブに自動切り替え
+            self.viewer.tabs.setCurrentIndex(0)
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"フォルダの読み込みに失敗しました:\n{folder_path}\n{str(e)}")
 
     def refresh_history(self):
         """履歴を再読み込みして無効なフォルダを除外"""

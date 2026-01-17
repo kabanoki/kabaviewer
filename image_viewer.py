@@ -2831,7 +2831,15 @@ class ImageViewer(QMainWindow):
     def select_folder(self):
         folder_path = QFileDialog.getExistingDirectory(self, "フォルダを選択")
         if folder_path:
-            self.load_images(folder_path)
+            try:
+                self.load_images(folder_path)
+            except ValueError as e:
+                # 画像が見つからない場合などのエラー
+                QMessageBox.warning(self, "エラー", f"選択されたフォルダに画像が見つかりませんでした:\n{folder_path}\n別のフォルダを選択してください。")
+                self.select_folder()  # 再度選択を促す
+            except Exception as e:
+                # その他の読み込みエラー
+                QMessageBox.warning(self, "エラー", f"フォルダの読み込み中にエラーが発生しました:\n{str(e)}")
 
     def init_menu(self):
         menubar = self.menuBar()
