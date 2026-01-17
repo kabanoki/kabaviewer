@@ -3454,13 +3454,14 @@ class ImageViewer(QMainWindow):
         self.tag_apply_worker.completion_finished.connect(self.on_background_apply_completed)
         self.tag_apply_worker.error_occurred.connect(self.on_background_apply_error)
         
-        # キャンセルボタンの接続
+        # キャンセルボタンの接続（テキストをリセット）
         try:
             self.bg_cancel_button.clicked.disconnect()
         except:
             pass
         self.bg_cancel_button.clicked.connect(self.cancel_background_process)
         self.bg_cancel_button.setEnabled(True)
+        self.bg_cancel_button.setText("キャンセル")
         
         # 表示開始
         self.background_progress_bar.setMaximum(len(items))
@@ -3477,13 +3478,57 @@ class ImageViewer(QMainWindow):
 
     def on_background_apply_completed(self, applied_count, total_tags, elapsed_time, failed_count):
         """バックグラウンド適用完了時の処理"""
-        self.background_progress_widget.hide()
-        self.bg_cancel_button.setEnabled(True)
+        # ウィンドウを前面に持ってくる（別の仮想デスクトップにいても通知が行くようにする）
+        self.activateWindow()
+        self.raise_()
+        QApplication.alert(self) # Dockのアイコンを跳ねさせて通知
         
         if failed_count == 0:
-            message = f"✅ {applied_count}枚の画像に{total_tags}個のタグを適用しました。\n（処理時間: {elapsed_time:.2f}秒）"
-            QMessageBox.information(self, "適用完了", message)
+            # 成功時: 進捗エリアを成功色に変更して目立たせる
+            self.background_progress_widget.setStyleSheet("""
+                QWidget {
+                    background-color: #2d5016;
+                    border-top: 2px solid #4CAF50;
+                }
+                QLabel {
+                    color: #ffffff;
+                    font-size: 13px;
+                    font-weight: bold;
+                }
+            """)
+            message = f"✅ {applied_count}枚に{total_tags}個のタグを適用完了 ({elapsed_time:.2f}秒)"
+            self.background_progress_label.setText(message)
+            self.background_progress_bar.setValue(self.background_progress_bar.maximum())
+            self.bg_cancel_button.setText("閉じる")
+            self.bg_cancel_button.setEnabled(True)
+            
+            # ボタン接続を更新
+            try:
+                self.bg_cancel_button.clicked.disconnect()
+            except:
+                pass
+            
+            def close_and_reset():
+                self.background_progress_widget.hide()
+                # スタイルをリセット
+                self.background_progress_widget.setStyleSheet("""
+                    QWidget {
+                        background-color: #333333;
+                        border-top: 1px solid #555555;
+                    }
+                    QLabel {
+                        color: #ffffff;
+                        font-size: 12px;
+                    }
+                """)
+            
+            self.bg_cancel_button.clicked.connect(close_and_reset)
+            
+            # 20秒後に自動非表示（以前より長く）
+            QTimer.singleShot(20000, lambda: close_and_reset() if self.background_progress_widget.isVisible() and self.bg_cancel_button.text() == "閉じる" else None)
         else:
+            # 失敗時: ダイアログを表示
+            self.background_progress_widget.hide()
             message = (f"⚠️ タグ適用が完了しました。\n\n"
                       f"✅ 成功: {applied_count}枚（{total_tags}個のタグ）\n"
                       f"❌ 失敗: {failed_count}枚\n"
@@ -3496,9 +3541,52 @@ class ImageViewer(QMainWindow):
 
     def on_background_apply_error(self, error_message, applied_count, failed_count):
         """バックグラウンド適用エラー時の処理"""
-        self.background_progress_widget.hide()
+        # ウィンドウを前面に持ってくる
+        self.activateWindow()
+        self.raise_()
+        QApplication.alert(self)
+        
+        # エラー時は進捗エリアを赤色に変更
+        self.background_progress_widget.setStyleSheet("""
+            QWidget {
+                background-color: #5d1616;
+                border-top: 2px solid #f44336;
+            }
+            QLabel {
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: bold;
+            }
+        """)
+        
+        error_summary = f"❌ エラー発生 - 成功: {applied_count}枚, 失敗: {failed_count}枚"
+        self.background_progress_label.setText(error_summary)
+        self.bg_cancel_button.setText("閉じる")
         self.bg_cancel_button.setEnabled(True)
         
+        # ボタン接続を更新
+        try:
+            self.bg_cancel_button.clicked.disconnect()
+        except:
+            pass
+        
+        def close_and_reset():
+            self.background_progress_widget.hide()
+            # スタイルをリセット
+            self.background_progress_widget.setStyleSheet("""
+                QWidget {
+                    background-color: #333333;
+                    border-top: 1px solid #555555;
+                }
+                QLabel {
+                    color: #ffffff;
+                    font-size: 12px;
+                }
+            """)
+        
+        self.bg_cancel_button.clicked.connect(close_and_reset)
+        
+        # 詳細なエラーメッセージをダイアログで表示
         message = (f"タグ適用中にエラーが発生しました:\n{error_message}\n\n"
                   f"途中経過:\n"
                   f"✅ 成功: {applied_count}枚\n"
