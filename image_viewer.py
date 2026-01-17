@@ -4,7 +4,7 @@ import random
 import zipfile
 import shutil
 import datetime
-from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog
+from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtCore import Qt, QTimer, QSettings, QPointF
 from PIL import Image
@@ -15,7 +15,11 @@ from favorite import FavoriteTab
 # タグシステムのインポート
 try:
     from tag_manager import TagManager
-    from tag_ui import TagTab, TagEditDialog, show_auto_tag_dialog, show_exclude_settings_dialog, show_mapping_rules_dialog, FavoriteImagesDialog, FavoritesTab
+    from tag_ui import (
+        TagTab, TagEditDialog, show_auto_tag_dialog, 
+        show_exclude_settings_dialog, show_mapping_rules_dialog, 
+        FavoriteImagesDialog, FavoritesTab, AutoTagDialog
+    )
     TAG_SYSTEM_AVAILABLE = True
 except ImportError as e:
     print(f"タグシステムのインポートに失敗しました: {e}")
@@ -1087,6 +1091,64 @@ class ImageViewer(QMainWindow):
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.tabs)
 
+        # バックグラウンド進捗表示エリア（追加）
+        self.background_progress_widget = QWidget()
+        self.background_progress_widget.setStyleSheet("""
+            QWidget {
+                background-color: #333333;
+                border-top: 1px solid #555555;
+            }
+            QLabel {
+                color: #ffffff;
+                font-size: 12px;
+            }
+        """)
+        self.background_progress_layout = QHBoxLayout(self.background_progress_widget)
+        self.background_progress_layout.setContentsMargins(15, 5, 15, 5)
+        
+        self.background_progress_label = QLabel("準備中...")
+        self.background_progress_bar = QProgressBar()
+        self.background_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #555555;
+                border-radius: 5px;
+                text-align: center;
+                background-color: #2b2b2b;
+                color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                width: 10px;
+                margin: 0.5px;
+            }
+        """)
+        self.background_progress_bar.setFixedHeight(15)
+        self.background_progress_bar.setMaximumWidth(300)
+        
+        self.background_progress_layout.addWidget(self.background_progress_label)
+        self.background_progress_layout.addStretch()
+        self.background_progress_layout.addWidget(self.background_progress_bar)
+        
+        # キャンセルボタン
+        self.bg_cancel_button = QPushButton("キャンセル")
+        self.bg_cancel_button.setFixedSize(80, 22)
+        self.bg_cancel_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        self.background_progress_layout.addWidget(self.bg_cancel_button)
+        
+        self.background_progress_widget.hide() # 初期状態は非表示
+        main_layout.addWidget(self.background_progress_widget)
+
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
@@ -1098,6 +1160,7 @@ class ImageViewer(QMainWindow):
         self.timer.timeout.connect(self.next_image)
 
         self.is_running = False
+        self.tag_apply_worker = None  # バックグラウンド適用用
 
         # 最後に開いたフォルダを開くか、新しく選択する
         last_folder = self.settings.value("last_folder", "")
@@ -3088,6 +3151,28 @@ class ImageViewer(QMainWindow):
     
     def closeEvent(self, event):
         """アプリケーション終了時にウィンドウサイズと位置を保存"""
+        # 実行中のバックグラウンド処理がある場合は確認
+        if self.tag_apply_worker and self.tag_apply_worker.isRunning():
+            reply = QMessageBox.question(
+                self, '処理中',
+                "現在タグを適用中です。処理を中断して終了しますか？\n"
+                "（「いいえ」を選ぶと、処理完了を待ちます）",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+
+            if reply == QMessageBox.Yes:
+                self.tag_apply_worker.cancel()
+                self.tag_apply_worker.wait(2000)  # 最大2秒待機
+            else:
+                # 完了まで待つ
+                progress = QProgressDialog("残りの処理を完了させています...", None, 0, 0, self)
+                progress.setWindowModality(Qt.WindowModal)
+                progress.show()
+                while self.tag_apply_worker.isRunning():
+                    QApplication.processEvents()
+                progress.close()
+
         # 最終的なウィンドウのジオメトリを保存
         self.save_window_geometry()
         # 親クラスのcloseEventを呼び出す
@@ -3346,6 +3431,83 @@ class ImageViewer(QMainWindow):
             
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"自動タグ付けダイアログの表示に失敗しました: {str(e)}")
+
+    def cancel_background_process(self):
+        """バックグラウンド処理をキャンセル"""
+        if self.tag_apply_worker:
+            self.tag_apply_worker.cancel()
+            self.background_progress_label.setText("キャンセル中...")
+            self.bg_cancel_button.setEnabled(False)
+
+    def start_background_tag_application(self, items, is_replace_mode, analysis_results):
+        """バックグラウンドでタグ適用を開始"""
+        if self.tag_apply_worker and self.tag_apply_worker.isRunning():
+            QMessageBox.warning(self, "実行中", "既にタグ適用処理が実行中です。")
+            return
+
+        from tag_ui import TagApplyWorker
+        
+        self.tag_apply_worker = TagApplyWorker(items, self.tag_manager, is_replace_mode, analysis_results)
+        
+        # UI更新の接続
+        self.tag_apply_worker.progress_updated.connect(self.update_background_progress)
+        self.tag_apply_worker.completion_finished.connect(self.on_background_apply_completed)
+        self.tag_apply_worker.error_occurred.connect(self.on_background_apply_error)
+        
+        # キャンセルボタンの接続
+        try:
+            self.bg_cancel_button.clicked.disconnect()
+        except:
+            pass
+        self.bg_cancel_button.clicked.connect(self.cancel_background_process)
+        self.bg_cancel_button.setEnabled(True)
+        
+        # 表示開始
+        self.background_progress_bar.setMaximum(len(items))
+        self.background_progress_bar.setValue(0)
+        self.background_progress_label.setText(f"タグ適用開始... (0/{len(items)})")
+        self.background_progress_widget.show()
+        
+        self.tag_apply_worker.start()
+
+    def update_background_progress(self, current, message):
+        """バックグラウンド処理の進捗を更新"""
+        self.background_progress_bar.setValue(current)
+        self.background_progress_label.setText(message)
+
+    def on_background_apply_completed(self, applied_count, total_tags, elapsed_time, failed_count):
+        """バックグラウンド適用完了時の処理"""
+        self.background_progress_widget.hide()
+        self.bg_cancel_button.setEnabled(True)
+        
+        if failed_count == 0:
+            message = f"✅ {applied_count}枚の画像に{total_tags}個のタグを適用しました。\n（処理時間: {elapsed_time:.2f}秒）"
+            QMessageBox.information(self, "適用完了", message)
+        else:
+            message = (f"⚠️ タグ適用が完了しました。\n\n"
+                      f"✅ 成功: {applied_count}枚（{total_tags}個のタグ）\n"
+                      f"❌ 失敗: {failed_count}枚\n"
+                      f"⏱️ 処理時間: {elapsed_time:.2f}秒\n\n"
+                      f"一部の画像でタグの書き込みに失敗しました。")
+            QMessageBox.warning(self, "適用完了（一部失敗）", message)
+        
+        # サイドバー更新
+        self.update_sidebar_metadata()
+
+    def on_background_apply_error(self, error_message, applied_count, failed_count):
+        """バックグラウンド適用エラー時の処理"""
+        self.background_progress_widget.hide()
+        self.bg_cancel_button.setEnabled(True)
+        
+        message = (f"タグ適用中にエラーが発生しました:\n{error_message}\n\n"
+                  f"途中経過:\n"
+                  f"✅ 成功: {applied_count}枚\n"
+                  f"❌ 失敗: {failed_count}枚")
+        QMessageBox.critical(self, "エラー", message)
+        
+        # サイドバー更新（部分的にでも成功していた場合）
+        if applied_count > 0:
+            self.update_sidebar_metadata()
     
     def show_exclude_settings_dialog(self):
         """自動タグ除外設定ダイアログを表示"""
