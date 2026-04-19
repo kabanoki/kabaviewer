@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDialogButtonBox, QCheckBox, QComboBox, QSpacerItem,
                              QSizePolicy, QProgressBar, QTableWidget, QTableWidgetItem,
                              QHeaderView, QGroupBox, QProgressDialog, QApplication)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QStringListModel
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QStringListModel, QSettings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import multiprocessing
@@ -2457,6 +2457,21 @@ class MappingRulesDialog(QDialog):
         super().__init__(parent)
         self.analyzer = analyzer
         self.tag_manager = tag_manager
+
+        # 生成タグ欄のオートコンプリート用デバウンスタイマー
+        # QSettings の "tag_completion_debounce_ms" で可変（既定 300ms、0 なら即時）
+        try:
+            self._completion_debounce_ms = int(
+                QSettings("MyCompany", "ImageViewerApp").value(
+                    "tag_completion_debounce_ms", 300, type=int
+                )
+            )
+        except Exception:
+            self._completion_debounce_ms = 300
+        self._completion_timer = QTimer(self)
+        self._completion_timer.setSingleShot(True)
+        self._completion_timer.timeout.connect(self._fire_tags_completion)
+
         self.init_ui()
         self.load_rules()
         self.setModal(True)
@@ -2610,6 +2625,38 @@ class MappingRulesDialog(QDialog):
         
         layout.addLayout(button_layout)
     
+    def _schedule_tags_completion(self):
+        """生成タグ欄のオートコンプリート更新をデバウンスしてスケジュール"""
+        if self._completion_debounce_ms <= 0:
+            self._fire_tags_completion()
+            return
+        self._completion_timer.start(self._completion_debounce_ms)
+
+    def _fire_tags_completion(self):
+        """デバウンスタイマー満了時に呼び出される実処理"""
+        try:
+            self.update_tags_completion()
+        except Exception as e:
+            print(f"[エラー] _fire_tags_completion エラー: {e}")
+
+    def closeEvent(self, event):
+        """ダイアログを閉じる際に遅延コールバックが走らないようタイマー停止"""
+        try:
+            if hasattr(self, '_completion_timer') and self._completion_timer is not None:
+                self._completion_timer.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def done(self, result):
+        """accept/reject 経由で閉じる場合にもタイマーを停止"""
+        try:
+            if hasattr(self, '_completion_timer') and self._completion_timer is not None:
+                self._completion_timer.stop()
+        except Exception:
+            pass
+        super().done(result)
+
     def setup_tags_autocomplete(self):
         """生成タグ入力フィールドにオートコンプリート機能を設定"""
         try:
@@ -2650,11 +2697,11 @@ class MappingRulesDialog(QDialog):
             # （カスタムのon_activatedで処理する）
             self.tags_completer.setWidget(self.tags_input)
             
-            # 入力内容が変更された時に候補を更新
-            self.tags_input.textChanged.connect(lambda: self.update_tags_completion())
-            
-            # カーソル位置が変更された時にも候補を更新
-            self.tags_input.cursorPositionChanged.connect(lambda: self.update_tags_completion())
+            # 入力内容が変更された時に候補を更新（デバウンス経由）
+            self.tags_input.textChanged.connect(lambda _=None: self._schedule_tags_completion())
+
+            # カーソル位置が変更された時にも候補を更新（デバウンス経由）
+            self.tags_input.cursorPositionChanged.connect(lambda *_: self._schedule_tags_completion())
             
         except Exception as e:
             print(f"[エラー] setup_tags_autocomplete エラー: {e}")
