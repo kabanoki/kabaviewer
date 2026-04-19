@@ -990,9 +990,18 @@ class TagTab(QWidget):
             # 検索タグ情報を取得
             search_text = self.search_input.text().strip()
             description = f"タグ検索: {search_text}"
-            
+
+            filter_query = {
+                "type": "tag_filter",
+                "name": search_text or "タグ検索",
+                "search_tags": list(self.current_search_tags),
+                "exclude_tags": list(self.current_exclude_tags),
+                "match_all": self.match_all_checkbox.isChecked(),
+                "only_favorites": self.favorites_only_checkbox.isChecked(),
+            }
+
             # ビューアーでフィルタリングされたリストを表示
-            self.viewer.load_filtered_images(image_paths, description)
+            self.viewer.load_filtered_images(image_paths, description, filter_query=filter_query)
             
             QMessageBox.information(self, "成功", f"{len(image_paths)}枚の画像をビューアーで表示しました。")
             

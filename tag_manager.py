@@ -442,20 +442,47 @@ class TagManager:
             if changed:
                 self.settings.setValue("folder_history", new_history)
                 
-        # 登録リスト (favorite_folders)
+        # 登録リスト (新フォーマット: favorite_entries)
+        entries = self.settings.value("favorite_entries", None)
+        entries_updated = False
+        entries_replaced = 0
+        if isinstance(entries, list) and entries:
+            new_entries = []
+            changed = False
+            for entry in entries:
+                if (isinstance(entry, dict)
+                        and entry.get("type") == "folder"
+                        and isinstance(entry.get("path"), str)
+                        and entry["path"].startswith(old_prefix)):
+                    new_entry = dict(entry)
+                    new_entry["path"] = entry["path"].replace(old_prefix, new_prefix, 1)
+                    new_entries.append(new_entry)
+                    changed = True
+                    entries_replaced += 1
+                    results["favorites"] += 1
+                else:
+                    new_entries.append(entry)
+            if changed:
+                self.settings.setValue("favorite_entries", new_entries)
+            entries_updated = True
+
+        # 登録リスト (旧フォーマット: favorite_folders) - 旧データが残っている環境も更新
         favorites = self.settings.value("favorite_folders", [])
+        legacy_count = 0
         if favorites:
             new_favorites = []
             changed = False
             for path in favorites:
-                if path.startswith(old_prefix):
+                if isinstance(path, str) and path.startswith(old_prefix):
                     new_favorites.append(path.replace(old_prefix, new_prefix, 1))
                     changed = True
-                    results["favorites"] += 1
+                    legacy_count += 1
                 else:
                     new_favorites.append(path)
             if changed:
                 self.settings.setValue("favorite_folders", new_favorites)
+                if not entries_updated:
+                    results["favorites"] += legacy_count
         
         return results
     

@@ -1328,6 +1328,7 @@ class ImageViewer(QMainWindow):
         self.list_mode = "folder"  # "folder" または "filter"
         self.current_folder = None
         self.filter_description = ""
+        self.current_filter_query = None  # フィルタモード時のタグ検索条件 dict
     
     def toggle_sidebar(self):
         """サイドバーの表示/非表示を切り替え"""
@@ -2213,6 +2214,7 @@ class ImageViewer(QMainWindow):
             # フォルダモードに設定
             self.list_mode = "folder"
             self.current_folder = folder_path
+            self.current_filter_query = None
             self.update_window_title()
             
             # お気に入りタブも更新
@@ -2226,7 +2228,7 @@ class ImageViewer(QMainWindow):
             # フォルダ選択ダイアログは呼び出し元で処理される
             raise  # エラーを再発生させて呼び出し元で処理
     
-    def load_filtered_images(self, image_list, description="フィルタリング結果"):
+    def load_filtered_images(self, image_list, description="フィルタリング結果", filter_query=None):
         """フィルタリングされた画像リストをビューアーに読み込み"""
         try:
             # 存在する画像ファイルのみをフィルタ
@@ -2244,6 +2246,7 @@ class ImageViewer(QMainWindow):
             self.list_mode = "filter"
             self.filter_description = description
             self.current_folder = None  # フォルダベースではない
+            self.current_filter_query = filter_query
             self.update_window_title()
             
             # ビューアータブに切り替え
@@ -3066,11 +3069,68 @@ class ImageViewer(QMainWindow):
         QMessageBox.about(self, title, text)
 
     def add_current_folder_to_favorites(self):
-        current_folder = self.settings.value("last_folder", "")
-        if current_folder and os.path.exists(current_folder):
-            self.favorite_tab.add_to_favorites(current_folder)
+        if not hasattr(self, 'list_mode'):
+            QMessageBox.warning(self, "エラー", "まだ画像リストが読み込まれていません。")
+            return
+
+        if self.list_mode == "folder":
+            folder_path = self.current_folder
+            if not folder_path or not os.path.exists(folder_path):
+                QMessageBox.warning(self, "エラー", "有効なフォルダが開かれていません。")
+                return
+            default_name = os.path.basename(folder_path)
+            name, ok = QInputDialog.getText(
+                self, "登録名を入力", "登録リストに表示する名前を入力してください:",
+                text=default_name
+            )
+            if not ok:
+                return
+            name = name.strip() or default_name
+            entry = {"type": "folder", "name": name, "path": folder_path}
+            self.favorite_tab.add_entry(entry)
+
+        elif self.list_mode == "filter":
+            if not self.current_filter_query:
+                QMessageBox.information(
+                    self, "情報",
+                    "このリストはタグ検索以外のフィルタリング結果のため、登録リストへの保存はできません。"
+                )
+                return
+            default_name = self.filter_description or "タグ検索"
+            name, ok = QInputDialog.getText(
+                self, "登録名を入力", "登録リストに表示する名前を入力してください:",
+                text=default_name
+            )
+            if not ok:
+                return
+            name = name.strip() or default_name
+            entry = dict(self.current_filter_query)
+            entry["name"] = name
+            self.favorite_tab.add_entry(entry)
+
         else:
-            QMessageBox.warning(self, "Error", "No valid folder to add to registered list.")
+            QMessageBox.warning(self, "エラー", "保存できる状態ではありません。")
+
+    def apply_saved_tag_filter(self, entry):
+        """登録済みタグ検索エントリを再実行してビューアーに表示"""
+        if not TAG_SYSTEM_AVAILABLE or not self.tag_manager:
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+        try:
+            results = self.tag_manager.search_by_tags(
+                entry.get("search_tags", []),
+                match_all=entry.get("match_all", True),
+                exclude_tags=entry.get("exclude_tags", []),
+                only_favorites=entry.get("only_favorites", False),
+            )
+            if not results:
+                QMessageBox.information(self, "情報", f"「{entry['name']}」に該当する画像が見つかりませんでした。")
+                return
+            description = f"タグ検索: {entry['name']}"
+            self.load_filtered_images(results, description, filter_query=entry)
+            self.tabs.setCurrentIndex(0)
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"タグ検索の実行に失敗しました: {str(e)}")
 
     def delete_current_image(self):
         if not self.images:
