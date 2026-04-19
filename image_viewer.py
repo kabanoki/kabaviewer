@@ -11,6 +11,7 @@ from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
 from favorite import FavoriteTab
+from version import __app_name__, __version__, __copyright__
 
 # タグシステムのインポート
 try:
@@ -3048,7 +3049,21 @@ class ImageViewer(QMainWindow):
             migrate_paths_action.triggered.connect(self.show_migrate_paths_dialog)
             maintenance_menu.addAction(migrate_paths_action)
 
+        # [ヘルプ]メニュー
+        help_menu = menubar.addMenu('ヘルプ')
+        about_action = QAction('バージョン情報', self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
 
+    def show_about_dialog(self):
+        """アプリのバージョン情報を表示するダイアログ"""
+        title = f'{__app_name__} について'
+        text = (
+            f'<h3>{__app_name__}</h3>'
+            f'<p>バージョン: <b>{__version__}</b></p>'
+            f'<p>{__copyright__}</p>'
+        )
+        QMessageBox.about(self, title, text)
 
     def add_current_folder_to_favorites(self):
         current_folder = self.settings.value("last_folder", "")

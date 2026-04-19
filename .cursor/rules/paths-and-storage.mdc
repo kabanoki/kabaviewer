@@ -1,0 +1,70 @@
+---
+description: ユーザーデータの保存先・パス結合・.appバンドル内への書き込み禁止・リソースパス解決
+globs: **/*.py
+alwaysApply: false
+---
+
+# ファイルパス・永続化データ管理ルール
+
+## ユーザーデータの保存先
+
+DB・設定・履歴・登録リストは `QStandardPaths.AppDataLocation` を基準にする。
+`.app` バンドル内（`sys._MEIPASS` 配下）には絶対に書き込まない（更新で消滅するため）。
+
+```python
+# ✅ GOOD: プラットフォーム標準の保存先を使用
+from PyQt5.QtCore import QStandardPaths
+import os
+
+data_dir = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+os.makedirs(data_dir, exist_ok=True)
+db_path = os.path.join(data_dir, "tags.db")
+
+# ❌ BAD: .appバンドル内や実行ファイルと同じディレクトリに書き込む
+db_path = os.path.join(os.path.dirname(__file__), "tags.db")
+```
+
+## パス結合
+
+```python
+# ✅ GOOD
+import os
+path = os.path.join(base_dir, "subdir", "file.db")
+
+from pathlib import Path
+path = Path(base_dir) / "subdir" / "file.db"
+
+# ❌ BAD: 文字列連結・スラッシュ直書き
+path = base_dir + "/" + "file.db"
+```
+
+## リソースパス解決（開発時 vs .appビルド時）
+
+`logo.png` などの読み取り専用リソースには以下のヘルパーを使う。
+
+```python
+import sys, os
+
+def get_resource_path(relative_path: str) -> str:
+    """開発時と PyInstaller ビルド時の両方で動くリソースパス解決"""
+    if getattr(sys, "frozen", False):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, relative_path)
+
+# 使用例
+logo_path = get_resource_path("logo.png")
+```
+
+## QSettings のキー管理
+
+- キー名はハードコードせず定数化して一元管理すること
+- `QSettings` は `organization` と `application` を指定して初期化
+
+```python
+# ✅ GOOD
+SETTINGS_LAST_FOLDER = "last_folder"
+settings = QSettings("kabanoki", "KabaViewer")
+folder = settings.value(SETTINGS_LAST_FOLDER, "")
+```

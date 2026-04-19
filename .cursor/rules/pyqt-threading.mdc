@@ -1,0 +1,63 @@
+---
+description: 重い処理を QThread/pyqtSignal で非同期化し、UIスレッドをブロックしないようにする
+globs: **/*.py
+alwaysApply: false
+---
+
+# PyQt5 UIブロッキング防止ルール
+
+UIスレッドで時間のかかる処理を実行してはならない。
+対象: ZIP圧縮、タグ一括適用・解析、画像スキャン、SQLite一括書き込み
+
+## ワーカーの実装パターン
+
+```python
+# ✅ GOOD: QThread + pyqtSignal で非同期化
+class MyWorker(QThread):
+    progress_updated = pyqtSignal(int, str)  # 進捗%, メッセージ
+    finished = pyqtSignal(object)            # 結果
+    error_occurred = pyqtSignal(str)         # エラーメッセージ
+
+    def run(self):
+        try:
+            for i, item in enumerate(self.items):
+                if self.is_cancelled:
+                    break
+                # ... 処理 ...
+                self.progress_updated.emit(i * 100 // len(self.items), item)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+```
+
+```python
+# ❌ BAD: UIスレッドで直接実行
+def on_button_clicked(self):
+    for image in self.images:
+        heavy_processing(image)  # UIがフリーズする
+```
+
+## 既存の参考実装
+
+`tag_ui.py` の `AutoTagWorker`（1436行目）と `TagApplyWorker`（1553行目）を参照。
+
+## シグナル接続と進捗表示
+
+```python
+# UIスレッド側: シグナル接続と QProgressDialog の使用
+self.worker = MyWorker(items)
+self.worker.progress_updated.connect(self.on_progress)
+self.worker.finished.connect(self.on_finished)
+self.worker.error_occurred.connect(self.on_error)
+self.worker.start()
+
+def on_progress(self, value: int, message: str):
+    self.progress_dialog.setValue(value)
+    self.progress_dialog.setLabelText(message)
+```
+
+## 禁止事項
+
+- `time.sleep()` や無限ループをUIスレッドで実行
+- ワーカースレッド内からウィジェットを直接操作（`setText`、`show` 等）
+- `QApplication.processEvents()` で誤魔化す（一時しのぎのみ可）

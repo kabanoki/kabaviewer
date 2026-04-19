@@ -1,0 +1,49 @@
+---
+description: 1ファイル2000行超で分割を検討し、ダイアログ/ワーカー単位でモジュール化する指針
+globs: **/*.py
+alwaysApply: false
+---
+
+# ファイル分割・モジュール設計ルール
+
+## 基本方針
+
+- 1ファイルが **2000行を超えたら分割を検討** する
+- ダイアログ・ウィジェット・ワーカー・ユーティリティはクラス単位で分割を検討
+- 分割した際は `__init__.py` は作らず、ファイル名で役割を明示する
+
+## 現状の分割候補
+
+現在 2000行超のファイル:
+
+| ファイル | 行数 | 分割候補 |
+|---|---|---|
+| `image_viewer.py` | 4266行 | `exif_dialog.py`（ExifInfoDialog）、`zip_exporter.py`（ZIP圧縮）、`slideshow.py`（スライドショーロジック） |
+| `tag_ui.py` | 3367行 | `tag_workers.py`（AutoTagWorker/TagApplyWorker）、`tag_dialogs.py`（各種ダイアログ）、`favorites_tab.py`（FavoritesTab） |
+
+## 分割の基準
+
+以下の条件を1つ以上満たすクラス・関数群は分割対象と見なす。
+
+1. 単独で 300行以上のクラス
+2. 他のクラスとの依存が少なく独立して機能する
+3. 同じような責務のクラスが複数存在する（例: 複数のダイアログクラス）
+
+## 命名規則
+
+分割後のファイル名は `<機能>_<種別>.py` の形式で命名する。
+
+```
+image_viewer.py      # メインウィンドウのみ残す
+exif_dialog.py       # ExifInfoDialog
+zip_exporter.py      # ZIP圧縮機能
+tag_ui.py            # TagTab, TagEditDialog（メインUI）
+tag_workers.py       # AutoTagWorker, TagApplyWorker
+tag_dialogs.py       # 各種設定ダイアログ
+```
+
+## 分割時の注意
+
+- `KabaViewer.spec` の `hiddenimports` への追加が不要か確認する（PyInstaller は通常 import を追跡するが隠れた import は手動追加が必要）
+- 循環 import が発生しないように依存方向を一方向にする
+- 新しいファイルを追加したら `README.md` の「ファイル構成」セクションを更新する

@@ -1,0 +1,62 @@
+---
+description: ユーザー向けのUI文言は日本語に統一し、絵文字アイコンの命名一貫性を維持する
+globs: image_viewer.py,tag_ui.py,favorite.py,history.py
+alwaysApply: false
+---
+
+# UI文言・日本語統一ルール
+
+## 基本方針
+
+メニュー、`QMessageBox`、ダイアログタイトル、ボタンラベル、ツールチップはすべて日本語にする。
+英語の表示文字列を新たに追加しないこと。
+
+```python
+# ✅ GOOD
+QMessageBox.warning(self, "エラー", "画像を読み込めませんでした。")
+action = menu.addAction("フォルダを選択")
+
+# ❌ BAD
+QMessageBox.warning(self, "Error", "No valid folder selected.")
+action = menu.addAction("Select Folder")
+```
+
+## 絵文字アイコンの使い方
+
+機能カテゴリと絵文字を以下の通り統一する。新しいメニュー・ボタンを追加する際は既存の対応に合わせること。
+
+| カテゴリ | 絵文字 | 使用例 |
+|---|---|---|
+| タグ関連 | 🏷️ | 「🏷️ タグ」「🏷️ タグ編集」 |
+| メンテナンス / 設定 | 🛠️ | 「🛠️ メンテナンス」 |
+| エクスポート / 圧縮 | 📦 | 「📦 リストをZIP圧縮」 |
+| フォルダ / 一括処理 | 📁 | 「📁 複数フォルダを一括タグ付け」 |
+| お気に入り | ⭐ / ♡ | 「⭐ お気に入り」「♡ お気に入りのみ」 |
+| 警告 / エラー | ⚠️ | ダイアログタイトル等 |
+
+絵文字はメニュー・ダイアログタイトルに限定する。コード内のコメントや変数名には使用しない。
+
+## QMessageBox のボタン・デフォルト
+
+- 破壊的操作（削除等）の確認ダイアログは `QMessageBox.Yes | QMessageBox.No` を使い、デフォルトを `QMessageBox.No` にする（既存の画像削除は `Yes` だが新規追加分は `No` を推奨）
+
+```python
+# ✅ GOOD: 削除確認のデフォルトは No
+reply = QMessageBox.question(
+    self, "削除の確認",
+    f"{name} を削除しますか？",
+    QMessageBox.Yes | QMessageBox.No,
+    QMessageBox.No,
+)
+```
+
+## ダイアログタイトル
+
+ダイアログのタイトルはアプリ名を含めず、操作内容を簡潔に示す。
+
+```python
+# ✅ GOOD
+self.setWindowTitle("タグ編集")
+# ❌ BAD
+self.setWindowTitle("KabaViewer - Tag Edit Dialog")
+```

@@ -1,0 +1,64 @@
+---
+description: 新規依存追加時に KabaViewer.spec を更新し、sys._MEIPASS でリソースパスを解決する
+globs: *.py,*.spec
+alwaysApply: false
+---
+
+# PyInstaller / ビルド互換性ルール
+
+## 新しい外部依存を追加したら spec を更新する
+
+新しい `pip install` パッケージを追加したら、[KabaViewer.spec](KabaViewer.spec) を確認し、
+PyInstaller が自動検出できない場合は `hiddenimports` / `datas` を更新する。
+
+```python
+# KabaViewer.spec 内での更新例
+a = Analysis(
+    ['main.py'],
+    hiddenimports=[
+        'new_package',          # 追加したパッケージ
+        'new_package.submodule', # 必要に応じてサブモジュールも
+    ],
+    datas=[
+        ('logo.png', '.'),       # (元ファイル, .appバンドル内の配置先)
+        ('templates/*.json', 'templates'),
+    ],
+    ...
+)
+```
+
+## ビルドコマンド
+
+```bash
+# 必ず --clean --noconfirm オプション付きで実行する
+pyinstaller --clean --noconfirm KabaViewer.spec
+```
+
+## リソースパス解決
+
+読み取り専用リソース（画像・設定テンプレート等）は `sys._MEIPASS` で解決する。
+`paths-and-storage.mdc` の `get_resource_path()` ヘルパーを使用すること。
+
+```python
+# ✅ GOOD: ビルド/開発どちらでも動く
+logo_path = get_resource_path("logo.png")
+icon = QIcon(logo_path)
+
+# ❌ BAD: 開発時しか動かない
+icon = QIcon("logo.png")
+icon = QIcon(os.path.join(os.path.dirname(__file__), "logo.png"))
+```
+
+## ビルド確認チェックリスト
+
+新機能を追加してビルドするとき:
+
+- [ ] 新しい外部パッケージを `hiddenimports` に追加したか
+- [ ] 新しいデータファイルを `datas` に追加したか
+- [ ] リソースパスに `get_resource_path()` を使っているか
+- [ ] `dist/KabaViewer.app` を実際に起動して動作確認したか
+
+## `*.spec` ファイルのコミット
+
+`KabaViewer.spec` は **コミット対象**（ビルド設定として管理）。
+`build/`、`dist/` は `.gitignore` により除外済み。

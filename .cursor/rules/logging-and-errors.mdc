@@ -1,0 +1,66 @@
+---
+description: print() の新規追加禁止・logging 統一・except Exception 握りつぶし禁止
+globs: **/*.py
+alwaysApply: false
+---
+
+# ロギング・エラーハンドリングルール
+
+## ロギング
+
+`print()` の新規追加は禁止。標準 `logging` モジュールに統一する。
+
+```python
+# ✅ GOOD: モジュール先頭で logger を取得して使用
+import logging
+logger = logging.getLogger(__name__)
+
+logger.debug("画像をロード中: %s", path)
+logger.info("タグ適用完了: %d 件", count)
+logger.warning("ファイルが見つかりません: %s", path)
+logger.error("DB接続に失敗しました")
+logger.exception("予期しないエラー")  # スタックトレースを自動付加
+
+# ❌ BAD
+print(f"タグ適用完了: {count}")
+```
+
+## エラーハンドリング
+
+`except Exception` または `except:` での握りつぶしは禁止。
+
+```python
+# ✅ GOOD: ユーザーへのフィードバック + ログ
+try:
+    result = load_image(path)
+except Exception as e:
+    logger.exception("画像の読み込みに失敗: %s", path)
+    QMessageBox.warning(self, "エラー", f"画像を読み込めませんでした:\n{path}")
+
+# ✅ GOOD: ユーザー影響がない処理でも必ずログを残す
+try:
+    cache.evict()
+except Exception:
+    logger.exception("キャッシュの削除に失敗（続行）")
+
+# ❌ BAD: 完全な握りつぶし
+try:
+    result = load_image(path)
+except Exception:
+    pass
+```
+
+## 既存コードの段階的置き換え
+
+既存コードには `except Exception` の握りつぶしが多数あるが、一括修正はしない。
+**編集したファイルの、触った周辺の例外処理**を上記のパターンに置き換えること。
+
+## エラーレベルの使い分け
+
+| レベル | 用途 |
+|---|---|
+| `DEBUG` | 開発時の詳細ログ（値の確認、分岐の追跡等） |
+| `INFO` | 処理の節目（ファイル読み込み完了、タグ適用完了等） |
+| `WARNING` | ファイルが存在しない、期待値外のデータ等 |
+| `ERROR` | 処理が失敗したがアプリは継続可能 |
+| `EXCEPTION` | 予期しない例外（スタックトレース込み） |

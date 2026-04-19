@@ -1,0 +1,65 @@
+---
+description: SQLiteスキーマ変更時に PRAGMA user_version でマイグレーションを管理し既存ユーザーDBを壊さない
+globs: tag_manager.py,auto_tag_analyzer.py
+alwaysApply: false
+---
+
+# DBスキーマ変更・マイグレーションルール
+
+## 基本方針
+
+- スキーマ変更（カラム追加・テーブル追加・インデックス追加等）は必ず既存DBへのマイグレーション処理とセットで実装する
+- `PRAGMA user_version` でスキーマバージョンを管理し、起動時に自動マイグレーションを適用する
+
+## スキーマバージョン管理テンプレート
+
+```python
+# tag_manager.py 内での実装パターン
+SCHEMA_VERSION = 3  # スキーマ変更のたびに +1 する
+
+def migrate(conn):
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    if current < 1:
+        conn.execute("CREATE TABLE IF NOT EXISTS tags (...)")
+
+    if current < 2:
+        # v1.5.0: お気に入りカラムを追加
+        conn.execute("ALTER TABLE images ADD COLUMN is_favorite INTEGER DEFAULT 0")
+
+    if current < 3:
+        # v1.8.0: インデックスを追加
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
+
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
+```
+
+## スキーマ変更時のチェックリスト
+
+- [ ] `SCHEMA_VERSION` を +1 した
+- [ ] `migrate()` に `if current < N:` ブロックを追加した
+- [ ] 新カラムには `DEFAULT` 値を指定した（`ALTER TABLE` は `DEFAULT` 必須）
+- [ ] `version.py` の `__version__` を更新した
+- [ ] `README.md` の更新履歴に「DBマイグレーション対応」と記載した
+
+## 禁止事項
+
+```python
+# ❌ BAD: スキーマをいきなり作り直す（既存データが消える）
+conn.execute("DROP TABLE IF EXISTS tags")
+conn.execute("CREATE TABLE tags (...)")
+
+# ❌ BAD: マイグレーションなしでカラムを追加（既存DBでエラー）
+conn.execute("CREATE TABLE tags (id INTEGER, name TEXT, new_col TEXT)")
+```
+
+## バックアップ
+
+マイグレーション前に DB ファイルを `.bak` としてコピーする処理を入れることを推奨。
+
+```python
+import shutil
+if os.path.exists(db_path):
+    shutil.copy2(db_path, db_path + ".bak")
+```
