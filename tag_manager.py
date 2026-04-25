@@ -180,11 +180,34 @@ class TagManager:
         
         self.db_path = os.path.join(self.app_data_dir, "tags.db")
         self.settings = QSettings("MyCompany", "ImageViewerApp")
-        
+
+        # お気に入り状態変更時の通知リスナー（callable(file_path: str, is_favorite: bool)）
+        self._favorite_listeners: list = []
+
         self.init_database()
         self._migrate_group_structure()
         self.seed_default_tag_groups()
         self.seed_groups_from_analyzer_defaults()
+
+    def add_favorite_listener(self, callback):
+        """お気に入り状態が変更された際に呼ばれるコールバックを登録する。
+
+        callback(file_path: str, is_favorite: bool) はメインスレッドから呼び出される前提
+        （SQLite 書き込み直後）。listener から例外が出ても他リスナーに影響しないよう握りつぶす。
+        """
+        if callback not in self._favorite_listeners:
+            self._favorite_listeners.append(callback)
+
+    def remove_favorite_listener(self, callback):
+        if callback in self._favorite_listeners:
+            self._favorite_listeners.remove(callback)
+
+    def _notify_favorite_changed(self, file_path, is_favorite):
+        for cb in list(self._favorite_listeners):
+            try:
+                cb(file_path, is_favorite)
+            except Exception as e:
+                print(f"favorite listener error: {e}")
     
     def init_database(self):
         """SQLiteデータベースの初期化・マイグレーション"""
@@ -572,34 +595,79 @@ class TagManager:
         # 3. QSettingsバックアップから取得
         return self._get_favorite_from_qsettings(file_path)
     
-    def set_favorite_status(self, file_path, is_favorite):
-        """画像のお気に入り状態を設定"""
+    def set_favorite_status_fast(self, file_path, is_favorite):
+        """SQLite + QSettings への書き込みを行う高速版（メインスレッド用）。
+
+        QSettings は軽量かつスレッドセーフでないためメインスレッド側で確定する。
+        EXIF 書き込み（piexif）のみ呼び出し側でワーカーに逃がす想定。
+        """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
         file_hash = self.calculate_file_hash(file_path)
         if not file_hash:
             return False
-        
-        # 既存のタグを取得
+
         existing_tags = self.get_tags(file_path)
-        
-        # お気に入り状態を指定してデータベースに保存
         self._save_to_database(file_path, file_hash, existing_tags, is_favorite)
-        
-        # EXIFにもお気に入り状態を埋め込み
-        self._save_favorite_to_exif(file_path, is_favorite)
-        
-        # QSettingsにもバックアップ
+        # QSettings はメインスレッドでのみ更新する
         self._save_favorite_to_qsettings(file_path, is_favorite)
-        
+        self._notify_favorite_changed(file_path, bool(is_favorite))
         return True
-    
+
+    def _write_favorite_side_effects(self, file_path, is_favorite):
+        """EXIF への書き込みのみ（ワーカースレッドから呼ぶ想定）。
+
+        QSettings は set_favorite_status_fast でメインスレッドから既に書き込まれている。
+        """
+        self._save_favorite_to_exif(file_path, is_favorite)
+
+    def set_favorite_status(self, file_path, is_favorite):
+        """画像のお気に入り状態を設定（SQLite + QSettings + EXIF の完全版・同期）"""
+        if not self.set_favorite_status_fast(file_path, is_favorite):
+            return False
+        self._write_favorite_side_effects(file_path, is_favorite)
+        return True
+
     def toggle_favorite(self, file_path):
-        """画像のお気に入り状態をトグル"""
+        """画像のお気に入り状態をトグル（SQLite のみ即時; EXIF/QSettings は呼び出し側で非同期化すること）"""
         current_status = self.get_favorite_status(file_path)
         new_status = not current_status
-        return self.set_favorite_status(file_path, new_status)
+        return self.set_favorite_status_fast(file_path, new_status), new_status
+
+    def get_favorite_map(self, file_paths):
+        """複数ファイルパスのお気に入り状態を一括取得して dict で返す。
+
+        DB に存在しないパスは False 扱い。500 件ずつ IN 句に分割してクエリを実行する。
+        """
+        if not file_paths:
+            return {}
+
+        result = {}
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        chunk_size = 500
+        for i in range(0, len(file_paths), chunk_size):
+            chunk = file_paths[i:i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            cursor.execute(f"""
+                SELECT file_path, is_favorite
+                FROM image_tags
+                WHERE file_path IN ({placeholders})
+                  AND (file_path, updated_at) IN (
+                      SELECT file_path, MAX(updated_at)
+                      FROM image_tags
+                      GROUP BY file_path
+                  )
+            """, chunk)
+            for row in cursor.fetchall():
+                result[row[0]] = bool(row[1])
+        conn.close()
+
+        for path in file_paths:
+            if path not in result:
+                result[path] = False
+        return result
     
     def get_favorite_images(self):
         """お気に入り画像のリストを取得"""

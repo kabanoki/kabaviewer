@@ -1,12 +1,13 @@
 # back
 import os
+import queue
 import random
 import zipfile
 import shutil
 import datetime
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
-from PyQt5.QtCore import Qt, QTimer, QSettings, QPointF
+from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
@@ -25,6 +26,64 @@ try:
 except ImportError as e:
     print(f"タグシステムのインポートに失敗しました: {e}")
     TAG_SYSTEM_AVAILABLE = False
+
+class FavoriteWriteWorker(QThread):
+    """EXIF/QSettings へのお気に入り書き込みをバックグラウンドで直列実行するワーカー。
+
+    キューに (file_path, is_favorite) を積み、run() ループで 1 件ずつ処理する。
+    失敗しても SQLite/UI はそのまま維持し、write_failed シグナルでメインスレッドへログ通知のみ行う。
+    """
+
+    write_failed = pyqtSignal(str, str)  # file_path, error_message
+
+    _SENTINEL = None
+
+    def __init__(self, tag_manager, parent=None):
+        super().__init__(parent)
+        self._tag_manager = tag_manager
+        self._queue = queue.Queue()
+        self._pending = 0
+        self._pending_lock = QMutex()
+
+    def _inc_pending(self):
+        self._pending_lock.lock()
+        self._pending += 1
+        self._pending_lock.unlock()
+
+    def _dec_pending(self):
+        self._pending_lock.lock()
+        self._pending = max(0, self._pending - 1)
+        self._pending_lock.unlock()
+
+    def pending_count(self) -> int:
+        """未処理（キュー内 + 処理中）件数を返す。"""
+        self._pending_lock.lock()
+        try:
+            return self._pending
+        finally:
+            self._pending_lock.unlock()
+
+    def enqueue(self, file_path, is_favorite):
+        self._inc_pending()
+        self._queue.put((file_path, is_favorite))
+
+    def stop(self):
+        """キューに番兵を入れてスレッドを終了させる。"""
+        self._queue.put(self._SENTINEL)
+
+    def run(self):
+        while True:
+            item = self._queue.get()
+            if item is self._SENTINEL:
+                break
+            file_path, is_favorite = item
+            try:
+                self._tag_manager._write_favorite_side_effects(file_path, is_favorite)
+            except Exception as e:
+                self.write_failed.emit(file_path, str(e))
+            finally:
+                self._dec_pending()
+
 
 class ExifInfoDialog(QDialog):
     """画像メタデータを美しく表示するダイアログ"""
@@ -950,7 +1009,25 @@ class ImageViewer(QMainWindow):
                 self.tag_manager = None
         else:
             self.tag_manager = None
-        
+
+        # お気に入りキャッシュ（現在フォルダ単位）
+        self._favorite_cache: dict = {}
+
+        # お気に入り書き込みワーカー（EXIF/QSettings をバックグラウンドで処理）
+        if self.tag_manager is not None:
+            self._favorite_writer = FavoriteWriteWorker(self.tag_manager, parent=self)
+            self._favorite_writer.write_failed.connect(self._on_favorite_write_failed)
+            self._favorite_writer.start()
+            # 他経路（FavoriteImagesDialog 等）からの状態変更でもキャッシュを同期する
+            self.tag_manager.add_favorite_listener(self._on_favorite_state_changed)
+        else:
+            self._favorite_writer = None
+
+        # オーバーレイ再描画用キャッシュ
+        self._last_single_canvas: QPixmap = None
+        self._last_single_image_geom: tuple = None  # (image_x, image_y, new_width, new_height)
+        self._last_grid_pixmaps: list = [None, None, None, None]
+
         self.initUI()
 
     def initUI(self):
@@ -1471,7 +1548,7 @@ class ImageViewer(QMainWindow):
         # お気に入りハートボタンの状態を更新（タグシステムが利用可能な場合）
         if TAG_SYSTEM_AVAILABLE and self.tag_manager and hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
             try:
-                is_favorite = self.tag_manager.get_favorite_status(image_path)
+                is_favorite = self._get_favorite(image_path)
                 self.update_favorite_heart_button(is_favorite)
             except Exception:
                 # お気に入り取得エラーは無視
@@ -2205,6 +2282,7 @@ class ImageViewer(QMainWindow):
             if not self.images:
                 raise ValueError("No images found in the selected folder.")
 
+            self._init_favorite_cache()
             self.sort_images()
             self.initialize_grid_system()  # 独立したグリッドシステムを初期化
             self.show_image()
@@ -2238,6 +2316,7 @@ class ImageViewer(QMainWindow):
                 raise ValueError("No valid images in the filtered list.")
             
             self.current_image_index = 0  # 最初の画像から開始
+            self._init_favorite_cache()
             self.sort_images()
             self.initialize_grid_system()
             self.show_image()
@@ -2260,6 +2339,30 @@ class ImageViewer(QMainWindow):
             print(f"load_filtered_images Error: {e}")
             raise
     
+    def _init_favorite_cache(self):
+        """self.images のお気に入り状態を一括取得してキャッシュを初期化する。"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager and hasattr(self, 'images') and self.images):
+            self._favorite_cache = {}
+            return
+        try:
+            self._favorite_cache = self.tag_manager.get_favorite_map(self.images)
+        except Exception as e:
+            print(f"_init_favorite_cache Error: {e}")
+            self._favorite_cache = {}
+
+    def _get_favorite(self, image_path):
+        """キャッシュからお気に入り状態を返す。未登録の場合は DB にフォールバックしキャッシュに書き戻す。"""
+        if image_path in self._favorite_cache:
+            return self._favorite_cache[image_path]
+        if TAG_SYSTEM_AVAILABLE and self.tag_manager:
+            try:
+                status = self.tag_manager.get_favorite_status(image_path)
+                self._favorite_cache[image_path] = status
+                return status
+            except Exception:
+                pass
+        return False
+
     def update_window_title(self):
         """ウィンドウタイトルを現在の状態に応じて更新"""
         if hasattr(self, 'list_mode'):
@@ -2504,10 +2607,14 @@ class ImageViewer(QMainWindow):
                     painter.drawPixmap(image_x, image_y, image_pixmap)
                     painter.end()
                 
+                # ハートなしキャンバスとジオメトリを保存（オーバーレイ再描画用）
+                self._last_single_canvas = canvas.copy()
+                self._last_single_image_geom = (image_x, image_y, new_width, new_height)
+
                 # お気に入りの場合はハートを表示（画像の左下を基準）
                 if self.tag_manager:
                     try:
-                        is_favorite = self.tag_manager.get_favorite_status(image_path)
+                        is_favorite = self._get_favorite(image_path)
                         if is_favorite:
                             # 画像の位置情報を渡してハートを描画
                             canvas = self.draw_favorite_heart_on_canvas(canvas, heart_size=25, 
@@ -2553,10 +2660,13 @@ class ImageViewer(QMainWindow):
                         qimage = QImage(image_bytes, w, h, QImage.Format_RGBA8888).copy()
                         pixmap = QPixmap.fromImage(qimage)
                     
+                    # ハートなしピクセルマップを保存（オーバーレイ再描画用）
+                    self._last_grid_pixmaps[i] = pixmap.copy()
+
                     # お気に入りの場合はハートを表示（グリッドでは小さめのハート）
                     if self.tag_manager:
                         try:
-                            is_favorite = self.tag_manager.get_favorite_status(image_path)
+                            is_favorite = self._get_favorite(image_path)
                             if is_favorite:
                                 pixmap = self.draw_favorite_heart(pixmap, heart_size=15)
                         except Exception as e:
@@ -2574,6 +2684,8 @@ class ImageViewer(QMainWindow):
                 except Exception as e:
                     self.grid_labels[i].setText("読み込み\nエラー")
                     print(f"Failed to load grid image {image_path}: {e}")
+                    # オーバーレイ再描画キャッシュを無効化（古い画像を再表示しないため）
+                    self._last_grid_pixmaps[i] = None
                     
                     # エラー時も選択状態に応じて境界線を設定
                     if self.selected_grid != -1 and i == self.selected_grid:
@@ -2583,6 +2695,8 @@ class ImageViewer(QMainWindow):
             else:
                 self.grid_labels[i].clear()
                 self.grid_labels[i].setText("画像なし")
+                # オーバーレイ再描画キャッシュを無効化
+                self._last_grid_pixmaps[i] = None
                 
                 # 画像がない場合も選択状態に応じて境界線を設定
                 if self.selected_grid != -1 and i == self.selected_grid:
@@ -2591,6 +2705,43 @@ class ImageViewer(QMainWindow):
                     self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
         
         self.update_window_title()
+
+    def _refresh_favorite_overlay_only(self):
+        """Pillow デコードなしでハートアイコンの表示だけを更新する軽量メソッド。
+
+        show_image() のフルリロードを避けるためにお気に入りトグル時に呼ぶ。
+        _last_single_canvas / _last_grid_pixmaps が未初期化の場合は何もしない（初回は show_image() 経由で描画される）。
+        """
+        if self.display_mode == 'single':
+            if self._last_single_canvas is None or self._last_single_image_geom is None:
+                return
+            if not self.images:
+                return
+            image_path = self.images[self.current_image_index]
+            is_favorite = self._get_favorite(image_path)
+            canvas = self._last_single_canvas.copy()
+            if is_favorite:
+                image_x, image_y, new_width, new_height = self._last_single_image_geom
+                canvas = self.draw_favorite_heart_on_canvas(
+                    canvas, heart_size=25,
+                    image_x=image_x, image_y=image_y,
+                    image_width=new_width, image_height=new_height
+                )
+            self.single_label.setPixmap(canvas)
+        else:
+            indices = self.calculate_grid_indices()
+            for i, img_index in enumerate(indices):
+                base = self._last_grid_pixmaps[i] if i < len(self._last_grid_pixmaps) else None
+                if base is None:
+                    continue
+                if not (0 <= img_index < len(self.images)):
+                    continue
+                image_path = self.images[img_index]
+                is_favorite = self._get_favorite(image_path)
+                pixmap = base.copy()
+                if is_favorite:
+                    pixmap = self.draw_favorite_heart(pixmap, heart_size=15)
+                self.grid_labels[i].setPixmap(pixmap)
 
     def calculate_grid_indices(self):
         """グリッド表示用の4つの画像インデックスを計算（独立ランダム配列使用）"""
@@ -3285,6 +3436,40 @@ class ImageViewer(QMainWindow):
                 
                 progress.close()
 
+        # FavoriteWriteWorker を安全停止（キューに残った EXIF/QSettings 書き込みを flush してから終了）
+        if self._favorite_writer is not None and self._favorite_writer.isRunning():
+            initial_pending = self._favorite_writer.pending_count()
+            if initial_pending > 0:
+                # キャンセル不可の進捗ダイアログを出して、書き込み完了を待機
+                fav_progress = QProgressDialog(
+                    f"お気に入り情報を保存しています... (0/{initial_pending})",
+                    None, 0, initial_pending, self
+                )
+                fav_progress.setWindowTitle("終了処理")
+                fav_progress.setWindowModality(Qt.WindowModal)
+                fav_progress.setCancelButton(None)
+                fav_progress.setMinimumDuration(0)
+                fav_progress.setValue(0)
+                fav_progress.show()
+                while True:
+                    remaining = self._favorite_writer.pending_count()
+                    done = max(0, initial_pending - remaining)
+                    fav_progress.setValue(done)
+                    fav_progress.setLabelText(
+                        f"お気に入り情報を保存しています... ({done}/{initial_pending})"
+                    )
+                    QApplication.processEvents()
+                    if remaining == 0:
+                        break
+                    self._favorite_writer.wait(50)  # 50ms 単位で進捗を反映
+                fav_progress.close()
+            self._favorite_writer.stop()
+            self._favorite_writer.wait()
+
+        # お気に入りリスナーを解除（複数インスタンス生成時の重複通知・参照リークを防ぐ）
+        if self.tag_manager is not None:
+            self.tag_manager.remove_favorite_listener(self._on_favorite_state_changed)
+
         # 最終的なウィンドウのジオメトリを保存
         self.save_window_geometry()
         # 親クラスのcloseEventを呼び出す
@@ -3302,6 +3487,34 @@ class ImageViewer(QMainWindow):
         self.message_label.raise_()  # ラベルを最前面に設定
         self.message_label.show()
         QTimer.singleShot(duration, self.message_label.hide)
+
+    def _on_favorite_write_failed(self, file_path, error_message):
+        """EXIF/QSettings 書き込み失敗の通知（log_only ポリシー）"""
+        file_name = os.path.basename(file_path)
+        print(f"[FavoriteWriteWorker] EXIF 書き込み失敗: {file_name}: {error_message}")
+        self.show_message(f"⚠ EXIF 書き込みに失敗しました: {file_name}", duration=3000)
+
+    def _on_favorite_state_changed(self, file_path, is_favorite):
+        """TagManager 経由でお気に入り状態が変更された際のキャッシュ同期。
+
+        toggle_favorite_status 経由でも呼ばれるが冪等。外部経路（お気に入り一覧
+        ダイアログでの削除等）でもキャッシュ・ハート表示が古くならないようにする。
+        """
+        prev = self._favorite_cache.get(file_path)
+        self._favorite_cache[file_path] = bool(is_favorite)
+
+        # 表示中画像が変更対象なら、ハートボタンとオーバーレイも即時更新
+        if prev == bool(is_favorite):
+            return
+        try:
+            if hasattr(self, 'images') and self.images:
+                current = self.images[self.current_image_index]
+                if current == file_path and hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
+                    self.update_favorite_heart_button(bool(is_favorite))
+            self._refresh_favorite_overlay_only()
+        except Exception:
+            # 描画系の更新失敗は致命的ではないので握りつぶす
+            pass
 
     def hide_message(self):
         self.message_label.hide()
@@ -3448,26 +3661,27 @@ class ImageViewer(QMainWindow):
             return
         
         try:
-            # お気に入り状態をトグル
-            result = self.tag_manager.toggle_favorite(image_path)
-            if result:
-                # 新しい状態を取得
-                is_favorite = self.tag_manager.get_favorite_status(image_path)
-                
-                # UIを更新
-                self.update_sidebar_metadata()
-                
-                # ハートボタンの状態も更新
+            # SQLite のみ即時トグル（EXIF/QSettings はバックグラウンドへ）
+            ok, is_favorite = self.tag_manager.toggle_favorite(image_path)
+            if ok:
+                # キャッシュ即更新
+                self._favorite_cache[image_path] = is_favorite
+
+                # ハートボタンの状態を即更新
                 if hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
                     self.update_favorite_heart_button(is_favorite)
-                
-                # 画像を再描画してハートの表示を更新
-                self.show_image()
-                
+
+                # Pillow デコードなしでハートオーバーレイだけ更新
+                self._refresh_favorite_overlay_only()
+
                 # 状態を表示
                 status = "お気に入りに追加" if is_favorite else "お気に入りから削除"
                 file_name = os.path.basename(image_path)
                 self.show_message(f"✨ 「{file_name}」を{status}しました")
+
+                # EXIF/QSettings の書き込みはワーカーに委ねる
+                if self._favorite_writer is not None:
+                    self._favorite_writer.enqueue(image_path, is_favorite)
             else:
                 QMessageBox.warning(self, "エラー", "お気に入り状態の更新に失敗しました。")
                 
