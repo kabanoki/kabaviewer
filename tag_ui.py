@@ -8,13 +8,15 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGridLayout, QScrollArea, QFrame, QDialog,
                              QDialogButtonBox, QCheckBox, QComboBox, QSpacerItem,
                              QSizePolicy, QProgressBar, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QGroupBox, QProgressDialog, QApplication)
+                             QHeaderView, QGroupBox, QProgressDialog, QApplication,
+                             QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog,
+                             QAbstractItemView)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QStringListModel, QSettings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import multiprocessing
 from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QImage, QBrush
-from tag_manager import TagManager
+from tag_manager import TagManager, UNCLASSIFIED_GROUP
 from PIL import Image
 
 class MultiTagCompleter(QCompleter):
@@ -655,14 +657,74 @@ class TagTab(QWidget):
         
         left_layout.addLayout(search_layout)
         
-        # タグ一覧
-        left_layout.addWidget(QLabel("🏷️ すべてのタグ（クリック: 検索に追加, Ctrl+クリック: 除外に追加）"))
-        self.all_tags_list = QListWidget()
-        # スタイルシートを完全に削除してPythonコードのみで色を管理
-        self.all_tags_list.setStyleSheet("")
+        # ─── タグ一覧ツールバー ─────────────────────────────
+        tag_header_layout = QHBoxLayout()
+        tag_header_layout.addWidget(QLabel("🏷️ タグ一覧（クリック: 検索追加, Ctrl+クリック: 除外追加）"))
+        tag_header_layout.addStretch()
+
+        add_group_btn = QPushButton("➕ グループ")
+        add_group_btn.setToolTip("新しいグループを作成")
+        add_group_btn.setMaximumWidth(90)
+        add_group_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #43a047;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #2e7d32; }
+        """)
+        add_group_btn.clicked.connect(self._add_group_dialog)
+        tag_header_layout.addWidget(add_group_btn)
+
+        reseed_btn = QPushButton("🔄 自動分類")
+        reseed_btn.setToolTip("auto_tag_analyzer のカテゴリを基に未分類タグを自動分類")
+        reseed_btn.setMaximumWidth(90)
+        reseed_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #7b1fa2;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #4a148c; }
+        """)
+        reseed_btn.clicked.connect(self._reseed_groups)
+        tag_header_layout.addWidget(reseed_btn)
+
+        bulk_assign_btn = QPushButton("📦 振り分け")
+        bulk_assign_btn.setToolTip("タグを選んで一括でグループに振り分ける")
+        bulk_assign_btn.setMaximumWidth(90)
+        bulk_assign_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1565c0;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #0d47a1; }
+        """)
+        bulk_assign_btn.clicked.connect(self._open_bulk_assign_dialog)
+        tag_header_layout.addWidget(bulk_assign_btn)
+
+        left_layout.addLayout(tag_header_layout)
+
+        # ─── タグツリー ──────────────────────────────────────
+        self.all_tags_tree = QTreeWidget()
+        self.all_tags_tree.setHeaderHidden(True)
+        self.all_tags_tree.setIndentation(12)
+        self.all_tags_tree.setStyleSheet("")
+        self.all_tags_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.all_tags_tree.customContextMenuRequested.connect(self._show_tag_context_menu)
+        self.all_tags_tree.itemClicked.connect(self._on_tree_item_clicked)
         self.load_all_tags()
-        self.all_tags_list.itemClicked.connect(self.tag_clicked)
-        left_layout.addWidget(self.all_tags_list)
+        left_layout.addWidget(self.all_tags_tree)
         
         # 右側: 検索結果と画像プレビュー
         right_widget = QWidget()
@@ -768,74 +830,256 @@ class TagTab(QWidget):
         main_layout.addWidget(splitter)
     
     def load_all_tags(self):
-        """すべてのタグを読み込み"""
-        all_tags = self.tag_manager.get_all_tags()
-        self.all_tags_list.clear()
-        self.all_tags_list.addItems(all_tags)
-        self.update_tag_visual_states()
-    
-    def update_tag_visual_states(self):
-        """タグリストの視覚状態を更新"""
-        for i in range(self.all_tags_list.count()):
-            item = self.all_tags_list.item(i)
-            tag_name = item.text()
-            
-            # まず全ての色をリセット
-            item.setBackground(QBrush())
-            item.setForeground(QBrush())
-            
-            if tag_name in self.current_exclude_tags:
-                # 除外タグ: 濃い赤色
-                red_brush = QBrush(QColor(255, 205, 210))  # #ffcdd2
-                item.setBackground(red_brush)
-                item.setForeground(QBrush(QColor(0, 0, 0)))  # 黒
-            elif tag_name in self.current_search_tags:
-                # 検索タグ: 濃い青色
-                blue_brush = QBrush(QColor(144, 202, 249))  # #90caf9
-                item.setBackground(blue_brush)
-                item.setForeground(QBrush(QColor(0, 0, 0)))  # 黒
+        """グループ別ツリー表示でタグを読み込む"""
+        # 現在のツリーの展開状態を取得して QSettings にも保存（セッション内リロード時の引き継ぎ用）
+        current_states = self._save_expansion_states()
+
+        self.all_tags_tree.clear()
+        grouped = self.tag_manager.get_tags_grouped()
+
+        for group_name, tags in grouped.items():
+            group_item = QTreeWidgetItem([f"{group_name} ({len(tags)})"])
+            group_item.setData(0, Qt.UserRole, ("group", group_name))
+            font = group_item.font(0)
+            font.setBold(True)
+            group_item.setFont(0, font)
+
+            for tag in tags:
+                tag_item = QTreeWidgetItem([tag])
+                tag_item.setData(0, Qt.UserRole, ("tag", tag))
+                group_item.addChild(tag_item)
+
+            self.all_tags_tree.addTopLevelItem(group_item)
+
+            # 展開状態の復元: セッション内の状態を優先し、なければ QSettings から読む
+            if group_name in current_states:
+                should_collapse = current_states[group_name]
             else:
-                # 通常状態: デフォルト色
-                item.setBackground(QBrush(QColor(255, 255, 255)))  # 白
-                item.setForeground(QBrush(QColor(0, 0, 0)))        # 黒
-        
-        # 強制的に再描画
-        self.all_tags_list.update()
-    
+                should_collapse = self.tag_manager.settings.value(
+                    f"tag_group_collapsed/{group_name}", False, type=bool
+                )
+            group_item.setExpanded(not should_collapse)
+
+        self.update_tag_visual_states()
+
+    def _save_expansion_states(self):
+        """現在のツリーの展開状態を dict で返しつつ QSettings にも保存する"""
+        states = {}
+        root = self.all_tags_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            data = item.data(0, Qt.UserRole)
+            if data and data[0] == "group":
+                group_name = data[1]
+                is_collapsed = not item.isExpanded()
+                states[group_name] = is_collapsed
+                self.tag_manager.settings.setValue(
+                    f"tag_group_collapsed/{group_name}", is_collapsed
+                )
+        return states
+
+    def update_tag_visual_states(self):
+        """タグツリーの視覚状態（検索タグ：青、除外タグ：赤）を更新"""
+        root = self.all_tags_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            group_item = root.child(i)
+            # グループ行はリセットのみ
+            group_item.setBackground(0, QBrush())
+            group_item.setForeground(0, QBrush())
+            for j in range(group_item.childCount()):
+                tag_item = group_item.child(j)
+                data = tag_item.data(0, Qt.UserRole)
+                if not data or data[0] != "tag":
+                    continue
+                tag_name = data[1]
+                if tag_name in self.current_exclude_tags:
+                    tag_item.setBackground(0, QBrush(QColor(255, 205, 210)))
+                    tag_item.setForeground(0, QBrush(QColor(0, 0, 0)))
+                elif tag_name in self.current_search_tags:
+                    tag_item.setBackground(0, QBrush(QColor(144, 202, 249)))
+                    tag_item.setForeground(0, QBrush(QColor(0, 0, 0)))
+                else:
+                    tag_item.setBackground(0, QBrush(QColor(255, 255, 255)))
+                    tag_item.setForeground(0, QBrush(QColor(0, 0, 0)))
+        self.all_tags_tree.update()
+
+    def _on_tree_item_clicked(self, item, _column):
+        """ツリーアイテムクリック時の処理"""
+        data = item.data(0, Qt.UserRole)
+        if not data:
+            return
+        kind, value = data
+        if kind == "group":
+            # グループ行: 展開/折り畳みトグル
+            item.setExpanded(not item.isExpanded())
+            # 状態を QSettings に保存
+            self.tag_manager.settings.setValue(
+                f"tag_group_collapsed/{value}", not item.isExpanded()
+            )
+        elif kind == "tag":
+            self.tag_clicked_by_name(value)
+
     def tag_clicked(self, item):
-        """タグがクリックされた時の処理"""
+        """旧 QListWidget 互換メソッド（現在は未使用だが外部参照に対応）"""
         tag_name = item.text()
+        self.tag_clicked_by_name(tag_name)
+
+    def tag_clicked_by_name(self, tag_name):
+        """タグ名を受け取って検索/除外欄に追加または削除する"""
         current_search = self.search_input.text()
-        
-        # Ctrlキーが押されている場合は除外タグに追加/削除
         modifiers = QApplication.keyboardModifiers()
         if modifiers == Qt.ControlModifier:
             current_exclude = self.exclude_input.text()
             if current_exclude:
-                exclude_tags = [tag.strip() for tag in current_exclude.split(',') if tag.strip()]
+                exclude_tags = [t.strip() for t in current_exclude.split(',') if t.strip()]
                 if tag_name in exclude_tags:
-                    # 選択済みのタグを削除
                     exclude_tags.remove(tag_name)
                     self.exclude_input.setText(', '.join(exclude_tags))
                 else:
-                    # 新しいタグを追加
                     self.exclude_input.setText(f"{current_exclude}, {tag_name}")
             else:
                 self.exclude_input.setText(tag_name)
         else:
-            # 通常の検索タグに追加/削除
             if current_search:
-                search_tags = [tag.strip() for tag in current_search.split(',') if tag.strip()]
+                search_tags = [t.strip() for t in current_search.split(',') if t.strip()]
                 if tag_name in search_tags:
-                    # 選択済みのタグを削除
                     search_tags.remove(tag_name)
                     self.search_input.setText(', '.join(search_tags))
                 else:
-                    # 新しいタグを追加
                     self.search_input.setText(f"{current_search}, {tag_name}")
             else:
                 self.search_input.setText(tag_name)
     
+    def _show_tag_context_menu(self, pos):
+        """ツリー上での右クリックメニューを表示"""
+        item = self.all_tags_tree.itemAt(pos)
+        global_pos = self.all_tags_tree.viewport().mapToGlobal(pos)
+
+        if item is None:
+            # 空白部分: グループ追加のみ
+            menu = QMenu(self)
+            menu.addAction("➕ 新しいグループを作成…", self._add_group_dialog)
+            menu.exec_(global_pos)
+            return
+
+        data = item.data(0, Qt.UserRole)
+        if not data:
+            return
+        kind, value = data
+
+        if kind == "group":
+            self._show_group_context_menu(global_pos, value)
+        elif kind == "tag":
+            self._show_tag_item_context_menu(global_pos, value)
+
+    def _show_group_context_menu(self, global_pos, group_name):
+        """グループ行の右クリックメニュー"""
+        menu = QMenu(self)
+        if group_name != UNCLASSIFIED_GROUP:
+            menu.addAction(f"✏️ グループ名を変更…", lambda: self._rename_group_dialog(group_name))
+            menu.addAction(f"🗑️ グループを削除（タグは未分類へ）", lambda: self._delete_group_dialog(group_name))
+            menu.addSeparator()
+        menu.addAction("➕ 新しいグループを作成…", self._add_group_dialog)
+        menu.exec_(global_pos)
+
+    def _show_tag_item_context_menu(self, global_pos, tag_name):
+        """タグ行の右クリックメニュー（グループ変更サブメニュー）"""
+        menu = QMenu(self)
+        change_menu = menu.addMenu("🏷️ グループを変更")
+
+        groups = self.tag_manager.get_all_groups()
+        current_group = self.tag_manager.get_group_of(tag_name)
+
+        for g in groups:
+            action = change_menu.addAction(g)
+            if g == current_group:
+                action.setCheckable(True)
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, gn=g: self._move_tag_to_group(tag_name, gn))
+
+        change_menu.addSeparator()
+        change_menu.addAction("（未分類）", lambda: self._remove_tag_from_group(tag_name))
+        change_menu.addSeparator()
+        change_menu.addAction("➕ 新しいグループに移動…", lambda: self._move_tag_to_new_group(tag_name))
+
+        menu.exec_(global_pos)
+
+    def _add_group_dialog(self):
+        """新しいグループを作成するダイアログ"""
+        name, ok = QInputDialog.getText(self, "新しいグループ", "グループ名を入力してください:")
+        if ok and name.strip():
+            if name.strip() == UNCLASSIFIED_GROUP:
+                QMessageBox.warning(self, "使用できない名前", f"「{UNCLASSIFIED_GROUP}」は予約済みのグループ名です。別の名前を入力してください。")
+                return
+            self.tag_manager.add_group(name.strip())
+            self.load_all_tags()
+
+    def _rename_group_dialog(self, old_name):
+        """グループ名変更ダイアログ"""
+        new_name, ok = QInputDialog.getText(
+            self, "グループ名を変更", "新しいグループ名を入力してください:", text=old_name
+        )
+        if ok and new_name.strip() and new_name.strip() != old_name:
+            if new_name.strip() == UNCLASSIFIED_GROUP:
+                QMessageBox.warning(self, "使用できない名前", f"「{UNCLASSIFIED_GROUP}」は予約済みのグループ名です。別の名前を入力してください。")
+                return
+            self.tag_manager.rename_group(old_name, new_name.strip())
+            self.load_all_tags()
+
+    def _delete_group_dialog(self, group_name):
+        """グループ削除確認ダイアログ"""
+        reply = QMessageBox.question(
+            self,
+            "グループを削除",
+            f"グループ「{group_name}」を削除しますか？\n所属するタグは「未分類」に移動されます。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.tag_manager.delete_group(group_name)
+            self.load_all_tags()
+
+    def _move_tag_to_group(self, tag_name, group_name):
+        """タグを指定グループに移動"""
+        self.tag_manager.set_tag_group(tag_name, group_name)
+        self.load_all_tags()
+
+    def _remove_tag_from_group(self, tag_name):
+        """タグを未分類に戻す"""
+        self.tag_manager.remove_tag_from_group(tag_name)
+        self.load_all_tags()
+
+    def _move_tag_to_new_group(self, tag_name):
+        """新しいグループを作成してタグを移動"""
+        name, ok = QInputDialog.getText(self, "新しいグループ", "グループ名を入力してください:")
+        if ok and name.strip():
+            if name.strip() == UNCLASSIFIED_GROUP:
+                QMessageBox.warning(self, "使用できない名前", f"「{UNCLASSIFIED_GROUP}」は予約済みのグループ名です。別の名前を入力してください。")
+                return
+            self.tag_manager.set_tag_group(tag_name, name.strip())
+            self.load_all_tags()
+
+    def _reseed_groups(self):
+        """未分類タグをデフォルトタクソノミ＋ auto_tag_analyzer のカテゴリで自動分類（手動変更済みは維持）"""
+        reply = QMessageBox.question(
+            self,
+            "自動分類を再適用",
+            "未分類のタグをデフォルトタクソノミおよび auto_tag_analyzer のカテゴリで自動分類します。\n"
+            "手動でグループ変更済みのタグは上書きされません。\n続けますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self.tag_manager.seed_default_tag_groups(force=True)
+            self.tag_manager.seed_groups_from_analyzer_defaults(force=True)
+            self.load_all_tags()
+
+    def _open_bulk_assign_dialog(self):
+        """一括グループ振り分けダイアログを開く。"""
+        dlg = TagGroupAssignDialog(self.tag_manager, self)
+        dlg.tags_assigned.connect(self.load_all_tags)
+        dlg.exec_()
+
     def clear_search_tags(self):
         """検索タグをクリア"""
         self.search_input.clear()
@@ -3374,3 +3618,230 @@ class FavoriteImagesDialog(QDialog):
     def get_selected_image_path(self):
         """選択された画像のパスを取得"""
         return self.selected_image_path
+
+
+class TagGroupAssignDialog(QDialog):
+    """タグを複数選択して一括でグループに振り分けるダイアログ。
+
+    左ペイン: タグ一覧（検索+グループフィルタ+複数選択可能なリスト）
+    右ペイン: グループ一覧（単一選択）
+    下部: 「このグループに移動」ボタン
+
+    シグナル tags_assigned を発火することで、呼び出し元が UI を再描画できる。
+    """
+
+    tags_assigned = pyqtSignal()
+
+    def __init__(self, tag_manager, parent=None):
+        super().__init__(parent)
+        self.tag_manager = tag_manager
+        self.setWindowTitle("タグ一括振り分け")
+        self.setMinimumSize(800, 540)
+        self.resize(900, 600)
+        self._build_ui()
+        self._load_tags()
+        self._load_groups()
+
+    # ──────────────────────────────────────────────
+    # UI 構築
+    # ──────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+
+        # ── 2カラム本体 ──────────────────────────────
+        columns = QHBoxLayout()
+
+        # ── 左ペイン: タグ一覧 ─────────────────────
+        left = QVBoxLayout()
+
+        left.addWidget(QLabel("タグ一覧（複数選択可）"))
+
+        # 検索
+        self.tag_search = QLineEdit()
+        self.tag_search.setPlaceholderText("タグ名で絞り込み…")
+        self.tag_search.textChanged.connect(self._load_tags)
+        left.addWidget(self.tag_search)
+
+        # グループフィルタ
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("グループ絞り込み:"))
+        self.group_filter = QComboBox()
+        self.group_filter.currentIndexChanged.connect(self._load_tags)
+        filter_row.addWidget(self.group_filter, 1)
+        left.addLayout(filter_row)
+
+        # タグリスト（ExtendedSelection で Shift/Ctrl 選択対応）
+        self.tag_list = QListWidget()
+        self.tag_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        left.addWidget(self.tag_list, 1)
+
+        # 全選択 / 選択解除
+        sel_row = QHBoxLayout()
+        sel_all_btn = QPushButton("全選択")
+        sel_all_btn.clicked.connect(self.tag_list.selectAll)
+        sel_none_btn = QPushButton("選択解除")
+        sel_none_btn.clicked.connect(self.tag_list.clearSelection)
+        sel_row.addWidget(sel_all_btn)
+        sel_row.addWidget(sel_none_btn)
+        sel_row.addStretch()
+        left.addLayout(sel_row)
+
+        # 選択件数ラベル
+        self.selection_label = QLabel("0件選択中")
+        self.tag_list.itemSelectionChanged.connect(self._on_selection_changed)
+        left.addWidget(self.selection_label)
+
+        left_widget = QWidget()
+        left_widget.setLayout(left)
+        columns.addWidget(left_widget, 3)
+
+        # ── 右ペイン: グループ一覧 ──────────────────
+        right = QVBoxLayout()
+        right.addWidget(QLabel("移動先グループ"))
+
+        self.group_list = QListWidget()
+        self.group_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        right.addWidget(self.group_list, 1)
+
+        new_group_btn = QPushButton("➕ 新しいグループを作成…")
+        new_group_btn.clicked.connect(self._create_group_dialog)
+        right.addWidget(new_group_btn)
+
+        right_widget = QWidget()
+        right_widget.setLayout(right)
+        columns.addWidget(right_widget, 2)
+
+        root.addLayout(columns, 1)
+
+        # ── 下部アクション ───────────────────────────
+        action_row = QHBoxLayout()
+
+        self.status_label = QLabel("")
+        action_row.addWidget(self.status_label, 1)
+
+        self.assign_btn = QPushButton("→ このグループに移動")
+        self.assign_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1565c0;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #0d47a1; }
+            QPushButton:disabled { background-color: #90a4ae; }
+        """)
+        self.assign_btn.clicked.connect(self._on_assign)
+        action_row.addWidget(self.assign_btn)
+
+        close_btn = QPushButton("閉じる")
+        close_btn.clicked.connect(self.accept)
+        action_row.addWidget(close_btn)
+
+        root.addLayout(action_row)
+
+    # ──────────────────────────────────────────────
+    # データ読み込み
+    # ──────────────────────────────────────────────
+
+    def _load_tags(self):
+        """フィルタ・検索文字列に応じてタグ一覧を再描画する。"""
+        search = self.tag_search.text().strip().lower()
+        filter_group = self.group_filter.currentData()
+
+        grouped = self.tag_manager.get_tags_grouped()
+
+        self.tag_list.blockSignals(True)
+        self.tag_list.clear()
+
+        for group_name, tags in grouped.items():
+            if filter_group is not None and filter_group != group_name:
+                continue
+            for tag in sorted(tags):
+                if search and search not in tag.lower():
+                    continue
+                label = f"{tag}  [{group_name}]"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, tag)
+                self.tag_list.addItem(item)
+
+        self.tag_list.blockSignals(False)
+        self._on_selection_changed()
+
+    def _load_groups(self):
+        """グループ一覧と絞り込みコンボを再描画する。"""
+        groups = self.tag_manager.get_all_groups()
+
+        # ── グループフィルタ コンボ ──
+        self.group_filter.blockSignals(True)
+        prev_filter = self.group_filter.currentData()
+        self.group_filter.clear()
+        self.group_filter.addItem("（すべて）", None)
+        self.group_filter.addItem(f"{UNCLASSIFIED_GROUP}", UNCLASSIFIED_GROUP)
+        for g in groups:
+            self.group_filter.addItem(g, g)
+        # 以前の選択を復元
+        idx = self.group_filter.findData(prev_filter)
+        self.group_filter.setCurrentIndex(idx if idx >= 0 else 0)
+        self.group_filter.blockSignals(False)
+
+        # ── 移動先グループ リスト ──
+        prev_group = (
+            self.group_list.currentItem().text()
+            if self.group_list.currentItem() else None
+        )
+        self.group_list.clear()
+        self.group_list.addItem(UNCLASSIFIED_GROUP)
+        for g in groups:
+            self.group_list.addItem(g)
+        # 以前の選択を復元
+        if prev_group:
+            matches = self.group_list.findItems(prev_group, Qt.MatchExactly)
+            if matches:
+                self.group_list.setCurrentItem(matches[0])
+
+    # ──────────────────────────────────────────────
+    # アクション
+    # ──────────────────────────────────────────────
+
+    def _on_selection_changed(self):
+        n = len(self.tag_list.selectedItems())
+        self.selection_label.setText(f"{n}件選択中")
+
+    def _on_assign(self):
+        selected_tags = [
+            item.data(Qt.UserRole) for item in self.tag_list.selectedItems()
+        ]
+        target_item = self.group_list.currentItem()
+        if not selected_tags:
+            self.status_label.setText("タグが選択されていません。")
+            return
+        if not target_item:
+            self.status_label.setText("移動先グループを選択してください。")
+            return
+
+        target = target_item.text()
+        self.tag_manager.set_tags_group(selected_tags, target)
+
+        self.status_label.setText(
+            f"{len(selected_tags)}件のタグを「{target}」に移動しました。"
+        )
+        self.tags_assigned.emit()
+        self._load_tags()
+
+    def _create_group_dialog(self):
+        name, ok = QInputDialog.getText(
+            self, "新しいグループ", "グループ名を入力してください:"
+        )
+        if ok and name.strip():
+            if name.strip() == UNCLASSIFIED_GROUP:
+                QMessageBox.warning(
+                    self, "使用できない名前",
+                    f"「{UNCLASSIFIED_GROUP}」は予約済みのグループ名です。"
+                )
+                return
+            self.tag_manager.add_group(name.strip())
+            self._load_groups()
+            self._load_tags()

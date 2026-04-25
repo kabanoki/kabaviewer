@@ -4,11 +4,166 @@
 import os
 import sqlite3
 import hashlib
+import shutil
 from datetime import datetime
 from PyQt5.QtCore import QSettings
 import piexif
 from PIL import Image
 import json
+
+# スキーマバージョン: テーブル/カラム追加のたびに +1 する
+SCHEMA_VERSION = 2
+
+# 「未分類」は仮想グループとして予約する（DB に実体を作らない）
+UNCLASSIFIED_GROUP = "未分類"
+
+# 廃止グループ → 統合先グループのマッピング
+# ここに登録されたグループは add_group / analyzer シード でも再生成されず、
+# _migrate_group_structure で既存タグが統合先へ移動される
+_MERGED_INTO: dict = {
+    "制服": "衣装",
+}
+
+# デフォルトのタグタクソノミー定義
+# キー = グループ名、値 = そのグループに初期割当するタグのリスト
+# 既に手動でグループ割当済みのタグは上書きしない
+# auto_tag_analyzer.get_default_mapping_rules() の具体値タグ（チャイナドレス/ツインテール/
+# ぱっつん 等）を網羅する形で整備している
+DEFAULT_TAG_GROUPS = {
+    "性的ポーズ": ["性的ポーズ", "体位",
+                   "騎乗位", "背面騎乗位", "アマゾン体位", "背後位", "フェラチオ",
+                   "足コキ", "手コキ", "側位", "正常位", "パイズリ", "寝バック",
+                   "立ちバック", "座位", "太ももで締め付ける", "触手", "スライム"],
+    "成人向け":   ["成人向け", "R-18", "ヌード"],
+    "キャラクター":   [],
+    "作品":   [],
+    "表情":       ["表情", "笑顔", "泣き顔", "怒り顔", "照れ顔", "驚き顔", "真顔", "ウィンク"],
+    "髪色":       ["髪色",
+                   "金髪", "茶髪", "黒髪", "白髪", "銀髪", "赤髪", "青髪", "緑髪",
+                   "ピンク髪", "紫髪", "黄髪", "灰髪", "オレンジ髪", "ブロンズ髪",
+                   "マルチカラー髪"],
+    "髪型":       ["髪型", "ロングヘア", "ショートヘア", "ツインテール", "ポニーテール",
+                   "三つ編み", "ストレートヘア", "ウェーブヘア",
+                   # 長さ
+                   "ベリーショート", "ピクシーカット", "ボブカット", "セミロング",
+                   "ベリーロング", "超ロング",
+                   # ポニーテール
+                   "ハイポニー", "ローポニー", "サイドポニー", "編み込みポニー",
+                   # ツインテール
+                   "ショートツイン", "ハイツイン", "ローツイン", "サイドツイン", "おさげ",
+                   # お団子
+                   "お団子", "ヘアバン", "ハイバン", "ローバン", "サイドバン",
+                   "ダブルバン", "編み込みバン",
+                   # 編み込み
+                   "編み込み", "クラウンブレイド", "フレンチブレイド",
+                   "三つ編みツインテール", "四つ編み", "両サイドに編み込み",
+                   "サイドブレイド", "編み込みリング",
+                   "低い位置で結んだ長い三つ編み",
+                   # アレンジ
+                   "ハーフアップ", "ハーフアップブレイド", "ツーサイドアップ",
+                   # 質感
+                   "ドリルヘア", "リングレット", "ドレッドロック", "コーンロウ",
+                   # 特殊部位
+                   "アホ毛", "染めアホ毛", "ハートアホ毛", "動くアホ毛",
+                   "アンテナヘア", "もみあげ", "頭の側面から伸びる毛束",
+                   "外はね", "レイヤード",
+                   # 前髪
+                   "前髪", "ぱっつん", "姫カット", "斜めの前髪", "アーチ状の前髪",
+                   "アシンメトリ", "交差した前髪", "はねた前髪", "編み込み前髪",
+                   "長い前髪", "短い前髪", "シースルーバング", "センター分け",
+                   "2ヶ所で分けた前髪", "両目の間の髪", "センターに垂れた前髪",
+                   "流した前髪", "ピン留め前髪", "後ろに流した髪", "後ろにまとめる",
+                   "目にかかる髪", "片目にかかる髪", "両目にかかる髪"],
+    "目の色":     ["目の色", "青い目", "緑の目", "茶色い目", "赤い目", "紫の目",
+                   "金色の目", "黒い目", "ピンクの目"],
+    "肌の色":     ["肌の色", "色白", "褐色肌", "日焼け肌", "浅黒い肌",
+                   "白肌", "黒肌", "茶肌"],
+    "衣装":       ["衣装", "ファッション", "ドレス", "着物", "水着", "ビキニ",
+                   "ランジェリー", "アーマー", "コスプレ",
+                   # 水着
+                   "Oリングビキニ", "スポーツブラビキニ", "ホルタービキニ",
+                   "フラウンスビキニ", "スクール水着", "レーシングスタイル水着",
+                   "ラッシュガード",
+                   # ドレス・ワンピース系
+                   "背中開きドレス", "黒ドレス", "ショートドレス", "セータードレス",
+                   "チャイナドレス", "中国風衣装",
+                   # トップス
+                   "白シャツ", "黒ジャケット", "ジャージ上", "タートルネック",
+                   "リブセーター", "童貞を殺す服", "セーター", "キャミソール",
+                   # ボトムス・スカート
+                   "ハイウエストスカート", "プリーツスカート", "ショートパンツ", "ブルマ",
+                   # 靴・レッグウェア
+                   "ブーツ", "編み上げブーツ", "ニーハイブーツ", "ハイヒール",
+                   "ローファー", "靴",
+                   "黒パンティストッキング", "パンティストッキング",
+                   "ニーソックス", "ソックス", "絶対領域ソックス", "ニーソ",
+                   # 部位・特徴
+                   "肩出し", "胸元カット", "フリル", "ゴシック", "長袖", "半袖",
+                   "ノースリーブ", "アームレス", "袖まくり", "リボン", "ネクタイ",
+                   # コスチューム
+                   "メイド", "メイドヘッドドレス", "ナース", "ナースキャップ",
+                   "巫女", "修女", "体操服", "裸",
+                   # 制服
+                   "制服", "セーラー服", "ブレザー", "ブレザー制服", "学生服"],
+    "身体":       ["身体", "体型", "巨乳", "貧乳", "大きい胸", "小さい胸", "乳首",
+                   "平らな胸", "普通の胸", "巨胸"],
+    "屋外":       ["屋外", "自然", "公園", "街", "ビーチ", "森", "山", "空",
+                   "村", "自然の背景", "街から遠く離れた草原",
+                   "プール", "海", "庭", "屋上", "花の前景", "メタバース"],
+    "屋内":       ["屋内", "建物", "部屋", "寝室", "キッチン", "リビング"],
+    "学校":       ["学校", "教育", "教室", "体育館"],
+    "ポーズ":     ["ポーズ", "動作", "立ち", "座り", "寝そべり", "歩く", "走る"],
+    "アニメ":     ["アニメ", "二次元"],
+    "リアル":     ["リアル", "写実的"],
+    "AI生成":     ["AI生成", "人工知能"],
+    "季節":       ["季節", "春", "夏", "秋", "冬", "花見", "クリスマス"],
+    "時間":       ["時間帯", "朝", "昼", "夕方", "夜"],
+}
+
+
+def _migrate(conn, db_path):
+    """SQLiteスキーマのマイグレーション処理"""
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    if current < 1:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS image_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_hash TEXT UNIQUE NOT NULL,
+                file_path TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                tags TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                file_modified_at TIMESTAMP,
+                is_favorite BOOLEAN DEFAULT 0
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_file_hash ON image_tags(file_hash)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON image_tags(file_path)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_tags ON image_tags(tags)')
+
+    if current < 2:
+        # v1.10.0: タググループ管理テーブルを追加
+        if os.path.exists(db_path):
+            shutil.copy2(db_path, db_path + ".bak")
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS tag_groups (
+                group_id   TEXT PRIMARY KEY,
+                sort_order INTEGER DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS tag_group_members (
+                tag      TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL
+            )
+        ''')
+
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
+
 
 class TagManager:
     """
@@ -27,39 +182,248 @@ class TagManager:
         self.settings = QSettings("MyCompany", "ImageViewerApp")
         
         self.init_database()
+        self._migrate_group_structure()
+        self.seed_default_tag_groups()
+        self.seed_groups_from_analyzer_defaults()
     
     def init_database(self):
-        """SQLiteデータベースの初期化"""
+        """SQLiteデータベースの初期化・マイグレーション"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS image_tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_hash TEXT UNIQUE NOT NULL,
-                file_path TEXT NOT NULL,
-                file_name TEXT NOT NULL,
-                tags TEXT NOT NULL,  -- JSON形式でタグ配列を保存
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                file_modified_at TIMESTAMP,
-                is_favorite BOOLEAN DEFAULT 0  -- お気に入りフラグ
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_file_hash ON image_tags(file_hash)
-        ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_file_path ON image_tags(file_path)
-        ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_tags ON image_tags(tags)
-        ''')
-        
-        conn.commit()
-        conn.close()
+        try:
+            _migrate(conn, self.db_path)
+        finally:
+            conn.close()
     
+    # ─────────────────────────────────────────
+    # タググループ管理
+    # ─────────────────────────────────────────
+
+    def _migrate_group_structure(self):
+        """DEFAULT_TAG_GROUPS の構造変更に追従するためのグループ統合マイグレーション。
+
+        _MERGED_INTO に登録されたグループを統合先へ移動し、旧グループを削除する。
+        フラグにより既存ユーザーに対して1回だけ実行される。
+        """
+        for old_group, new_group in _MERGED_INTO.items():
+            key = f"tag_group_migrate_{old_group}_to_{new_group}_v1"
+            if self.settings.value(key, False, type=bool):
+                continue
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "UPDATE tag_group_members SET group_id = ? WHERE group_id = ?",
+                    (new_group, old_group)
+                )
+                conn.execute("DELETE FROM tag_groups WHERE group_id = ?", (old_group,))
+                conn.commit()
+            finally:
+                conn.close()
+            self.settings.setValue(key, True)
+
+    def seed_default_tag_groups(self, force=False):
+        """DEFAULT_TAG_GROUPS に基づきグループ作成＋未分類タグの自動割当を行う。
+
+        既に手動でグループ割当済みのタグは上書きしない。
+        force=True でも手動変更済みタグは維持される。
+
+        グループが既存の場合でも sort_order を DEFAULT_TAG_GROUPS の定義順で上書きする
+        （既存ユーザーで analyzer シードが先に走っていた場合も順序を統一するため）。
+        """
+        if not force and self.settings.value("tag_default_groups_seeded_v3", False, type=bool):
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            for idx, (group_name, tags) in enumerate(DEFAULT_TAG_GROUPS.items()):
+                if group_name == UNCLASSIFIED_GROUP:
+                    continue
+                # INSERT OR IGNORE ではなく UPSERT で sort_order も更新する
+                conn.execute(
+                    "INSERT INTO tag_groups (group_id, sort_order) VALUES (?, ?) "
+                    "ON CONFLICT(group_id) DO UPDATE SET sort_order = excluded.sort_order",
+                    (group_name, idx * 10)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        # タグ割当（手動変更済みは維持）
+        for group_name, tags in DEFAULT_TAG_GROUPS.items():
+            for tag in tags:
+                if self.get_group_of(tag) is None:
+                    self.set_tag_group(tag, group_name)
+        self.settings.setValue("tag_default_groups_seeded_v3", True)
+
+    def seed_groups_from_analyzer_defaults(self, force=False):
+        """auto_tag_analyzer のカテゴリから初期グループとメンバーをシード（初回起動時に1回だけ実行）"""
+        if not force and self.settings.value("tag_groups_seeded_v1", False, type=bool):
+            return
+        try:
+            from auto_tag_analyzer import AutoTagAnalyzer
+            analyzer = AutoTagAnalyzer()
+            for idx, (group_name, spec) in enumerate(analyzer.category_rules.items()):
+                # _MERGED_INTO に登録されたグループはスキップし、タグを統合先へ振り向ける
+                effective_group = _MERGED_INTO.get(group_name, group_name)
+                self.add_group(effective_group, sort_order=idx * 10)
+                for tag in spec.get("tags", []):
+                    if self.get_group_of(tag) is None:
+                        self.set_tag_group(tag, effective_group)
+            self.settings.setValue("tag_groups_seeded_v1", True)
+        except Exception as e:
+            print(f"[TagManager] seed_groups_from_analyzer_defaults failed: {e}")
+
+    def get_all_groups(self):
+        """グループ一覧を sort_order 昇順で返す"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT group_id FROM tag_groups ORDER BY sort_order ASC, group_id ASC"
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+
+    def add_group(self, group_id, sort_order=100):
+        """グループを追加する（既存の場合は何もしない / sort_order は新規作成時のみ適用）。
+        UNCLASSIFIED_GROUP および _MERGED_INTO に登録済みの廃止グループは DB への作成を拒否する。
+        """
+        if group_id == UNCLASSIFIED_GROUP:
+            return
+        if group_id in _MERGED_INTO:
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO tag_groups (group_id, sort_order) VALUES (?, ?)",
+                (group_id, sort_order)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def rename_group(self, old_id, new_id):
+        """グループ名を変更する（メンバーの参照も更新）。
+        UNCLASSIFIED_GROUP を含む変更は拒否する。
+        """
+        if old_id == new_id:
+            return
+        if old_id == UNCLASSIFIED_GROUP or new_id == UNCLASSIFIED_GROUP:
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO tag_groups (group_id, sort_order) "
+                "SELECT ?, sort_order FROM tag_groups WHERE group_id = ?",
+                (new_id, old_id)
+            )
+            conn.execute(
+                "UPDATE tag_group_members SET group_id = ? WHERE group_id = ?",
+                (new_id, old_id)
+            )
+            conn.execute("DELETE FROM tag_groups WHERE group_id = ?", (old_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_group(self, group_id):
+        """グループを削除する（所属タグは未分類に退避）"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "DELETE FROM tag_group_members WHERE group_id = ?", (group_id,)
+            )
+            conn.execute("DELETE FROM tag_groups WHERE group_id = ?", (group_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_group_of(self, tag):
+        """タグが属するグループを返す（未所属の場合は None）"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT group_id FROM tag_group_members WHERE tag = ?", (tag,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def set_tag_group(self, tag, group_id):
+        """タグを指定グループに割り当てる（グループが存在しない場合は自動作成）。
+        group_id に UNCLASSIFIED_GROUP を指定した場合はグループ割り当てを解除する。
+        """
+        if group_id == UNCLASSIFIED_GROUP:
+            return self.remove_tag_from_group(tag)
+        self.add_group(group_id)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO tag_group_members (tag, group_id) VALUES (?, ?)",
+                (tag, group_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def set_tags_group(self, tags, group_id):
+        """複数タグをまとめて指定グループに割り当てる。
+        group_id に UNCLASSIFIED_GROUP を指定した場合は各タグのグループ割り当てを解除する。
+        """
+        if group_id == UNCLASSIFIED_GROUP:
+            for tag in tags:
+                self.remove_tag_from_group(tag)
+            return
+        self.add_group(group_id)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO tag_group_members (tag, group_id) VALUES (?, ?)",
+                [(tag, group_id) for tag in tags]
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def remove_tag_from_group(self, tag):
+        """タグのグループ割り当てを解除する（未分類へ）"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM tag_group_members WHERE tag = ?", (tag,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_tags_grouped(self):
+        """タグをグループ別に整理した辞書を返す。
+        戻り値: OrderedDict 順 (sort_order 昇順のグループ → タグリスト)
+        グループ未割当のタグは "未分類" キーの末尾に追加される。
+        """
+        groups = self.get_all_groups()
+        all_tags = self.get_all_tags()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT tag, group_id FROM tag_group_members"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        tag_to_group = {row[0]: row[1] for row in rows}
+
+        result = {g: [] for g in groups}
+        unclassified = []
+
+        for tag in all_tags:
+            group = tag_to_group.get(tag)
+            if group and group in result:
+                result[group].append(tag)
+            else:
+                unclassified.append(tag)
+
+        # 空グループも保持（ユーザーが作ったグループは空でも表示する）
+        result[UNCLASSIFIED_GROUP] = unclassified
+
+        return result
+
     def calculate_file_hash(self, file_path):
         """ファイルの一意性確認用ハッシュ計算"""
         try:

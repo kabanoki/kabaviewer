@@ -753,6 +753,7 @@ class AutoTagAnalyzer:
             "prone bone": ["寝バック"],
             "standing doggy": ["立ちバック"],
             "upright straddle": ["座位"],
+            "object held between thighs": ["太ももで締め付ける"],
             "tentacles": ["触手"],
             "slime": ["スライム"],
         }
