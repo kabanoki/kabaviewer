@@ -1109,7 +1109,9 @@ class TagTab(QWidget):
         self.search_groups_layout.addWidget(container)
         self.group_rows.append(row)
         line.setFocus()
-        self.update_search_results()
+        # 空行の追加では検索結果は変わらないため、ここでは update_search_results を呼ばない。
+        # 起動時 init_ui 中に呼び出されると依存ウィジェット未生成でクラッシュするのを回避。
+        # 入力されれば textChanged シグナルで update_search_results が走る。
 
     def _remove_search_group_row(self, row):
         """指定した行を削除する。最後の1行はクリアのみ。"""
