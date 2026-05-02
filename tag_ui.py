@@ -562,8 +562,10 @@ class TagTab(QWidget):
         super().__init__()
         self.tag_manager = tag_manager
         self.viewer = viewer
-        self.current_search_tags = set()  # 現在の検索タグ
+        self.current_tag_groups = []  # List[List[str]]: 各内側はOR、外側はAND
+        self.current_search_tags = set()  # ハイライト用に全グループ内タグの集合
         self.current_exclude_tags = set()  # 現在の除外タグ
+        self.group_rows = []  # 各行: {"input": QLineEdit, "container": QWidget}
         self.init_ui()
     
     def init_ui(self):
@@ -575,38 +577,34 @@ class TagTab(QWidget):
         
         # 検索セクション
         search_layout = QVBoxLayout()
-        search_layout.addWidget(QLabel("🔍 タグで検索"))
-        
-        # 検索タグ入力行
-        search_input_layout = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("検索したいタグを入力（カンマ区切りで複数指定可能）")
-        self.search_input.textChanged.connect(self.update_search_results)
-        search_input_layout.addWidget(self.search_input)
-        
-        # 検索タグクリアボタン
-        self.search_clear_btn = QPushButton("×")
-        self.search_clear_btn.setMaximumWidth(30)
-        self.search_clear_btn.setToolTip("検索タグをクリア")
-        self.search_clear_btn.clicked.connect(self.clear_search_tags)
-        self.search_clear_btn.setStyleSheet("""
+        search_layout.addWidget(QLabel("🔍 タグで検索（同じ行内はOR、行同士はAND）"))
+
+        # 検索タググループ行コンテナ（動的に行を追加）
+        self.search_groups_layout = QVBoxLayout()
+        self.search_groups_layout.setContentsMargins(0, 0, 0, 0)
+        self.search_groups_layout.setSpacing(4)
+        search_layout.addLayout(self.search_groups_layout)
+
+        # 「ORグループを追加」ボタン
+        add_group_row_btn = QPushButton("➕ ORグループを追加")
+        add_group_row_btn.setToolTip("AND結合される新しい検索行を追加")
+        add_group_row_btn.clicked.connect(self.add_search_group_row)
+        add_group_row_btn.setStyleSheet("""
             QPushButton {
-                background-color: #ff6b6b;
+                background-color: #1976d2;
                 color: white;
                 border: none;
                 border-radius: 4px;
+                padding: 4px 8px;
                 font-weight: bold;
-                font-size: 14px;
             }
-            QPushButton:hover {
-                background-color: #ff5252;
-            }
-            QPushButton:pressed {
-                background-color: #e53935;
-            }
+            QPushButton:hover { background-color: #1565c0; }
+            QPushButton:pressed { background-color: #0d47a1; }
         """)
-        search_input_layout.addWidget(self.search_clear_btn)
-        search_layout.addLayout(search_input_layout)
+        search_layout.addWidget(add_group_row_btn)
+
+        # 初期行を1つ追加
+        self.add_search_group_row()
         
         # 除外タグ入力行
         exclude_label = QLabel("🚫 除外するタグ")
@@ -643,11 +641,7 @@ class TagTab(QWidget):
         search_layout.addLayout(exclude_input_layout)
         
         search_options_layout = QHBoxLayout()
-        self.match_all_checkbox = QCheckBox("すべてのタグにマッチ")
-        self.match_all_checkbox.setChecked(True)
-        self.match_all_checkbox.toggled.connect(self.update_search_results)
-        search_options_layout.addWidget(self.match_all_checkbox)
-        
+
         # お気に入りフィルターチェックボックスを追加
         self.favorites_only_checkbox = QCheckBox("♡ お気に入りのみ")
         self.favorites_only_checkbox.setChecked(False)
@@ -926,7 +920,6 @@ class TagTab(QWidget):
 
     def tag_clicked_by_name(self, tag_name):
         """タグ名を受け取って検索/除外欄に追加または削除する"""
-        current_search = self.search_input.text()
         modifiers = QApplication.keyboardModifiers()
         if modifiers == Qt.ControlModifier:
             current_exclude = self.exclude_input.text()
@@ -939,16 +932,19 @@ class TagTab(QWidget):
                     self.exclude_input.setText(f"{current_exclude}, {tag_name}")
             else:
                 self.exclude_input.setText(tag_name)
-        else:
-            if current_search:
-                search_tags = [t.strip() for t in current_search.split(',') if t.strip()]
-                if tag_name in search_tags:
-                    search_tags.remove(tag_name)
-                    self.search_input.setText(', '.join(search_tags))
-                else:
-                    self.search_input.setText(f"{current_search}, {tag_name}")
+            return
+
+        target = self._active_group_input()
+        current_text = target.text()
+        if current_text:
+            tags = [t.strip() for t in current_text.split(',') if t.strip()]
+            if tag_name in tags:
+                tags.remove(tag_name)
+                target.setText(', '.join(tags))
             else:
-                self.search_input.setText(tag_name)
+                target.setText(f"{current_text}, {tag_name}")
+        else:
+            target.setText(tag_name)
     
     def _show_tag_context_menu(self, pos):
         """ツリー上での右クリックメニューを表示"""
@@ -1080,9 +1076,91 @@ class TagTab(QWidget):
         dlg.tags_assigned.connect(self.load_all_tags)
         dlg.exec_()
 
+    def add_search_group_row(self):
+        """新しい検索ORグループ行を追加"""
+        container = QWidget()
+        row_layout = QHBoxLayout(container)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+
+        line = QLineEdit()
+        line.setPlaceholderText("OR検索したいタグ（カンマ区切りで複数指定）")
+        line.textChanged.connect(self.update_search_results)
+        row_layout.addWidget(line)
+
+        remove_btn = QPushButton("×")
+        remove_btn.setMaximumWidth(30)
+        remove_btn.setToolTip("この行を削除（最後の1行はクリアのみ）")
+        remove_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b6b;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover { background-color: #ff5252; }
+            QPushButton:pressed { background-color: #e53935; }
+        """)
+        row = {"input": line, "container": container, "remove_btn": remove_btn}
+        remove_btn.clicked.connect(lambda _checked=False, r=row: self._remove_search_group_row(r))
+        row_layout.addWidget(remove_btn)
+
+        self.search_groups_layout.addWidget(container)
+        self.group_rows.append(row)
+        line.setFocus()
+        self.update_search_results()
+
+    def _remove_search_group_row(self, row):
+        """指定した行を削除する。最後の1行はクリアのみ。"""
+        if len(self.group_rows) <= 1:
+            row["input"].clear()
+            return
+        try:
+            self.group_rows.remove(row)
+        except ValueError:
+            return
+        row["container"].setParent(None)
+        row["container"].deleteLater()
+        self.update_search_results()
+
+    def _collect_tag_groups(self):
+        """全行から [[tag,...], ...] を組み立て。空行はスキップ。"""
+        groups = []
+        for row in self.group_rows:
+            text = row["input"].text().strip()
+            if not text:
+                continue
+            tags = [t.strip() for t in text.split(',') if t.strip()]
+            if tags:
+                groups.append(tags)
+        return groups
+
+    def _active_group_input(self):
+        """フォーカス中のグループ入力欄、なければ最後の行の入力欄を返す。"""
+        if not self.group_rows:
+            self.add_search_group_row()
+        for row in self.group_rows:
+            if row["input"].hasFocus():
+                return row["input"]
+        return self.group_rows[-1]["input"]
+
+    def _format_tag_groups_description(self, tag_groups):
+        """tag_groups を '(A OR B) AND C' 形式の文字列に整形"""
+        parts = []
+        for group in tag_groups:
+            if not group:
+                continue
+            if len(group) == 1:
+                parts.append(group[0])
+            else:
+                parts.append("(" + " OR ".join(group) + ")")
+        return " AND ".join(parts)
+
     def clear_search_tags(self):
-        """検索タグをクリア"""
-        self.search_input.clear()
+        """全グループ行の検索タグをクリア"""
+        for row in self.group_rows:
+            row["input"].clear()
         # textChangedシグナルで自動的にupdate_search_resultsが呼ばれる
     
     def clear_exclude_tags(self):
@@ -1092,38 +1170,33 @@ class TagTab(QWidget):
     
     def update_search_results(self):
         """検索結果を更新"""
-        search_text = self.search_input.text().strip()
         exclude_text = self.exclude_input.text().strip()
-        
-        # 内部のタグ状態を更新
-        self.current_search_tags = set()
+
+        # タググループを再計算
+        self.current_tag_groups = self._collect_tag_groups()
+        self.current_search_tags = set(tag for group in self.current_tag_groups for tag in group)
         self.current_exclude_tags = set()
-        
-        if search_text:
-            self.current_search_tags = set(tag.strip() for tag in search_text.split(',') if tag.strip())
-        
+
         if exclude_text:
             self.current_exclude_tags = set(tag.strip() for tag in exclude_text.split(',') if tag.strip())
-        
+
         # タグリストの視覚状態を更新
         self.update_tag_visual_states()
-        
-        # 検索タグと除外タグの両方が空で、お気に入りフィルターもオフの場合は結果をクリア
-        if not search_text and not exclude_text and not self.favorites_only_checkbox.isChecked():
+
+        # すべての検索条件が空で、お気に入りフィルターもオフの場合は結果をクリア
+        if not self.current_tag_groups and not exclude_text and not self.favorites_only_checkbox.isChecked():
             self.results_list.clear()
             return
-        
-        # 検索タグを解析
-        tags = list(self.current_search_tags)
-        
-        # 除外タグを解析
+
         exclude_tags = list(self.current_exclude_tags)
-        
-        match_all = self.match_all_checkbox.isChecked()
         only_favorites = self.favorites_only_checkbox.isChecked()
-        
+
         try:
-            results = self.tag_manager.search_by_tags(tags, match_all=match_all, exclude_tags=exclude_tags, only_favorites=only_favorites)
+            results = self.tag_manager.search_by_tag_groups(
+                self.current_tag_groups,
+                exclude_tags=exclude_tags,
+                only_favorites=only_favorites,
+            )
             
             self.results_list.clear()
             for file_path in results:
@@ -1232,15 +1305,14 @@ class TagTab(QWidget):
         
         try:
             # 検索タグ情報を取得
-            search_text = self.search_input.text().strip()
-            description = f"タグ検索: {search_text}"
+            description_body = self._format_tag_groups_description(self.current_tag_groups)
+            description = f"タグ検索: {description_body}" if description_body else "タグ検索"
 
             filter_query = {
                 "type": "tag_filter",
-                "name": search_text or "タグ検索",
-                "search_tags": list(self.current_search_tags),
+                "name": description_body or "タグ検索",
+                "tag_groups": [list(group) for group in self.current_tag_groups],
                 "exclude_tags": list(self.current_exclude_tags),
-                "match_all": self.match_all_checkbox.isChecked(),
                 "only_favorites": self.favorites_only_checkbox.isChecked(),
             }
 
