@@ -108,6 +108,9 @@ pip install pyinstaller
 
 # Mac用.appファイルのビルド
 pyinstaller --clean --noconfirm KabaViewer.spec
+
+# 私の環境ビルド
+source venv/bin/activate && pyinstaller --clean --noconfirm KabaViewer.spec
 ```
 
 ## ファイル構成
