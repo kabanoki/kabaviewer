@@ -686,81 +686,93 @@ class TagManager:
         
         return [(row[0], row[1], row[2]) for row in results]
     
-    def search_by_tags(self, tags, match_all=True, exclude_tags=None, only_favorites=False):
-        """タグで画像を検索（JSON配列内の完全一致）
-        
+    def search_by_tag_groups(self, tag_groups, exclude_tags=None, only_favorites=False):
+        """ORグループの配列をANDで結合してタグ検索する。
+
         Args:
-            tags: 検索対象のタグリスト
-            match_all: True=すべてのタグにマッチ, False=いずれかのタグにマッチ
-            exclude_tags: 除外するタグのリスト（このタグを持つ画像は結果から除外）
-            only_favorites: True=お気に入り画像のみを検索対象にする
+            tag_groups: List[List[str]] 各内側リストはOR、外側リスト同士はAND。
+                例: [["A", "B"], ["C"]] => (A OR B) AND C
+            exclude_tags: 除外するタグのリスト
+            only_favorites: True=お気に入り画像のみ検索対象
         """
         if exclude_tags is None:
             exclude_tags = []
-            
+
+        # 空グループ・空タグはスキップ
+        effective_groups = [
+            [t for t in group if t]
+            for group in (tag_groups or [])
+            if group and any(group)
+        ]
+        effective_groups = [g for g in effective_groups if g]
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        # SQLクエリにお気に入りフィルターを追加
+
         if only_favorites:
-            # お気に入りのみを取得（最新のレコードのみ）
             cursor.execute('''
-                SELECT DISTINCT file_path, tags 
-                FROM image_tags 
+                SELECT DISTINCT file_path, tags
+                FROM image_tags
                 WHERE (file_path, updated_at) IN (
-                    SELECT file_path, MAX(updated_at) 
-                    FROM image_tags 
+                    SELECT file_path, MAX(updated_at)
+                    FROM image_tags
                     GROUP BY file_path
                 ) AND is_favorite = 1
             ''')
         else:
-            # 最新のレコードのみを取得（重複を避ける）
-            cursor.execute('''  
-                SELECT DISTINCT file_path, tags 
-                FROM image_tags 
+            cursor.execute('''
+                SELECT DISTINCT file_path, tags
+                FROM image_tags
                 WHERE (file_path, updated_at) IN (
-                    SELECT file_path, MAX(updated_at) 
-                    FROM image_tags 
+                    SELECT file_path, MAX(updated_at)
+                    FROM image_tags
                     GROUP BY file_path
                 )
             ''')
         all_records = cursor.fetchall()
         conn.close()
-        
+
         matching_files = []
-        
+
         for file_path, tags_json in all_records:
-            # ファイルが存在するかチェック
             if not os.path.exists(file_path):
                 continue
-                
+
             try:
-                # JSONをパースしてタグリストを取得
                 file_tags = json.loads(tags_json) if tags_json else []
-                
-                # 除外タグチェック - 除外タグが含まれている場合はスキップ
+
                 if exclude_tags and any(exclude_tag in file_tags for exclude_tag in exclude_tags):
                     continue
-                
-                # マッチング判定
-                is_match = False
-                if not tags:  # 検索タグが空の場合は除外タグのチェックのみ
+
+                if not effective_groups:
                     is_match = True
-                elif match_all:
-                    # すべての検索タグが画像のタグに含まれているかチェック
-                    is_match = all(tag in file_tags for tag in tags)
                 else:
-                    # いずれかの検索タグが画像のタグに含まれているかチェック
-                    is_match = any(tag in file_tags for tag in tags)
-                
+                    is_match = all(
+                        any(tag in file_tags for tag in group)
+                        for group in effective_groups
+                    )
+
                 if is_match:
                     matching_files.append(file_path)
-                        
+
             except (json.JSONDecodeError, TypeError):
-                # JSONの解析に失敗した場合はスキップ
                 continue
-        
+
         return matching_files
+
+    def search_by_tags(self, tags, match_all=True, exclude_tags=None, only_favorites=False):
+        """旧API: tagsとmatch_allをtag_groupsに変換して新関数に委譲する。"""
+        if not tags:
+            tag_groups = []
+        elif match_all:
+            tag_groups = [[t] for t in tags]
+        else:
+            tag_groups = [list(tags)]
+        return self.search_by_tag_groups(
+            tag_groups,
+            exclude_tags=exclude_tags,
+            only_favorites=only_favorites,
+        )
     
     def get_all_tags(self):
         """すべてのユニークタグを取得（優先順序付き）"""
