@@ -3268,9 +3268,19 @@ class ImageViewer(QMainWindow):
             QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
             return
         try:
-            results = self.tag_manager.search_by_tags(
-                entry.get("search_tags", []),
-                match_all=entry.get("match_all", True),
+            if "tag_groups" in entry:
+                groups = entry.get("tag_groups", [])
+            else:
+                tags = entry.get("search_tags", [])
+                if not tags:
+                    groups = []
+                elif entry.get("match_all", True):
+                    groups = [[t] for t in tags]
+                else:
+                    groups = [list(tags)]
+
+            results = self.tag_manager.search_by_tag_groups(
+                groups,
                 exclude_tags=entry.get("exclude_tags", []),
                 only_favorites=entry.get("only_favorites", False),
             )

@@ -147,6 +147,24 @@ class FavoriteTab(QWidget):
         }
         self.add_entry(entry)
 
+    @staticmethod
+    def _normalize_tag_groups(entry):
+        """tag_filter エントリを正規化された tag_groups (frozenset of frozensets) に変換。
+
+        旧形式 (search_tags + match_all) も新形式 (tag_groups) も同じ表現にする。
+        """
+        if "tag_groups" in entry:
+            groups = entry.get("tag_groups", []) or []
+        else:
+            tags = entry.get("search_tags", []) or []
+            if not tags:
+                groups = []
+            elif entry.get("match_all", True):
+                groups = [[t] for t in tags]
+            else:
+                groups = [list(tags)]
+        return frozenset(frozenset(g) for g in groups if g)
+
     def add_entry(self, entry):
         """エントリ dict を登録リストに追加する"""
         if not entry:
@@ -160,9 +178,8 @@ class FavoriteTab(QWidget):
                     return
             elif existing.get("type") == "tag_filter" and entry.get("type") == "tag_filter":
                 if (existing.get("name") == entry.get("name")
-                        and set(existing.get("search_tags", [])) == set(entry.get("search_tags", []))
+                        and self._normalize_tag_groups(existing) == self._normalize_tag_groups(entry)
                         and set(existing.get("exclude_tags", [])) == set(entry.get("exclude_tags", []))
-                        and existing.get("match_all") == entry.get("match_all")
                         and existing.get("only_favorites") == entry.get("only_favorites")):
                     QMessageBox.information(self, "情報", "同じ検索条件がすでに登録済みです。")
                     return
