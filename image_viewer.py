@@ -3667,13 +3667,20 @@ class ImageViewer(QMainWindow):
         if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
             QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
             return
-        
+
         # image_pathが無効な値（None、False、空文字列など）の場合は現在の画像を取得
         if not image_path or not isinstance(image_path, str):
             if not hasattr(self, 'images') or not self.images:
                 QMessageBox.warning(self, "エラー", "表示する画像がありません。")
                 return
-            
+
+            # グリッドモードで明示的な選択が無い場合は誤操作防止のため無効化。
+            # （スライドで current_image_index が表示と乖離するため、勝手に
+            #  古い画像がトグルされて意図せずお気に入りが解除される事故を防ぐ）
+            if self.display_mode == 'grid' and self.selected_grid == -1:
+                self.show_message("グリッドをクリックして選択してから F を押してください")
+                return
+
             try:
                 image_path = self.images[self.current_image_index]
             except (IndexError, TypeError) as e:
