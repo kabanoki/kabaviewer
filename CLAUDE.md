@@ -60,6 +60,15 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Branching Workflow
+
+**新規機能を開発する際は、必ず専用ブランチを作成してから作業を始める。**
+
+- 作業開始前に `feature/claude/[機能名]` ブランチを作成し、そのブランチ上で開発・コミットを行う。
+- 機能名は短くハイフン区切りの英小文字（kebab-case）。例: `feature/claude/tag-search-rule`、`feature/claude/zip-export`。
+- main や既存の作業ブランチに直接コミットしない。
+- 軽微な修正（typo・コメント・READMEのみ等）でも、利用者から明示の指示がない限り同じルールに従う。
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
