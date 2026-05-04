@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QGroupBox, QProgressDialog, QApplication,
                              QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog,
                              QAbstractItemView)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QStringListModel, QSettings
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QStringListModel, QSettings, QEvent
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import multiprocessing
@@ -566,6 +566,7 @@ class TagTab(QWidget):
         self.current_search_tags = set()  # ハイライト用に全グループ内タグの集合
         self.current_exclude_tags = set()  # 現在の除外タグ
         self.group_rows = []  # 各行: {"input": QLineEdit, "container": QWidget}
+        self._last_focused_input = None  # 直近にフォーカスされていた検索行の QLineEdit
         self.init_ui()
     
     def init_ui(self):
@@ -1085,6 +1086,8 @@ class TagTab(QWidget):
         line = QLineEdit()
         line.setPlaceholderText("OR検索したいタグ（カンマ区切りで複数指定）")
         line.textChanged.connect(self.update_search_results)
+        # フォーカスを得たタイミングを記録するためにイベントフィルタを設置
+        line.installEventFilter(self)
         row_layout.addWidget(line)
 
         remove_btn = QPushButton("×")
@@ -1122,9 +1125,20 @@ class TagTab(QWidget):
             self.group_rows.remove(row)
         except ValueError:
             return
+        if self._last_focused_input is row["input"]:
+            self._last_focused_input = None
         row["container"].setParent(None)
         row["container"].deleteLater()
         self.update_search_results()
+
+    def eventFilter(self, obj, event):
+        """検索行の QLineEdit のフォーカス取得を捕捉して最後の入力先を記録する。"""
+        if event.type() == QEvent.FocusIn:
+            for row in self.group_rows:
+                if row["input"] is obj:
+                    self._last_focused_input = obj
+                    break
+        return super().eventFilter(obj, event)
 
     def _collect_tag_groups(self):
         """全行から [[tag,...], ...] を組み立て。空行はスキップ。"""
@@ -1139,12 +1153,23 @@ class TagTab(QWidget):
         return groups
 
     def _active_group_input(self):
-        """フォーカス中のグループ入力欄、なければ最後の行の入力欄を返す。"""
+        """直近にフォーカスがあったグループ入力欄を返す。なければ末尾の行。
+
+        タグツリーをクリックするとフォーカスがツリー側に移るため、現在の
+        hasFocus() ではなく eventFilter で記録した最終フォーカス先を使う。
+        """
         if not self.group_rows:
             self.add_search_group_row()
+        # 現在フォーカス中の行があれば優先（行の入力欄からタグをクリックしたケース）
         for row in self.group_rows:
             if row["input"].hasFocus():
                 return row["input"]
+        # 直近にフォーカスがあった行が現存していればそれを使う
+        if self._last_focused_input is not None:
+            for row in self.group_rows:
+                if row["input"] is self._last_focused_input:
+                    return self._last_focused_input
+        # フォールバック: 末尾の行
         return self.group_rows[-1]["input"]
 
     def _format_tag_groups_description(self, tag_groups):
