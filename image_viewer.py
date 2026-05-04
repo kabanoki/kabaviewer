@@ -3313,6 +3313,12 @@ class ImageViewer(QMainWindow):
     def delete_current_image(self):
         if not self.images:
             return
+        # グリッドモードで明示的な選択が無い場合は誤操作防止のため無効化。
+        # （スライドで current_image_index が表示と乖離するため、勝手に
+        #  古い画像が削除される事故を防ぐ）
+        if self.display_mode == 'grid' and self.selected_grid == -1:
+            self.show_message("グリッドをクリックして選択してから Delete を押してください")
+            return
         current_image_path = self.images[self.current_image_index]
         # 確認メッセージの表示
         reply = QMessageBox.question(self, '画像を削除',
