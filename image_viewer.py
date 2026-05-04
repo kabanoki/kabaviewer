@@ -2776,6 +2776,19 @@ class ImageViewer(QMainWindow):
             
             self.setWindowTitle(f"KabaViewer - {folder_name} - {self.current_image_index + 1}/{len(self.images)} - {order_type_str} ({order_direction}) - {mode_str}モード")
 
+    def _clear_grid_selection(self):
+        """グリッドの選択状態を解除し、境界線を未選択状態に戻す。
+
+        show_image() を呼ばないパス（お気に入りトグルなど）でも視覚状態を
+        リセットできるよう、ここで明示的にスタイルシートを戻す。
+        show_image() が後から呼ばれる場合でも、境界線は再描画されるだけで害はない。
+        """
+        if self.selected_grid == -1:
+            return
+        self.selected_grid = -1
+        for label in self.grid_labels:
+            label.setStyleSheet("border: 1px solid gray;")
+
     def grid_label_clicked(self, grid_index):
         """グリッド内の画像がクリックされた時の処理（トグル動作）"""
         if 0 <= grid_index < 4:
@@ -2838,7 +2851,9 @@ class ImageViewer(QMainWindow):
             for i in range(4):
                 if self.grid_indices[i]:
                     self.grid_positions[i] = (self.grid_positions[i] + 1) % len(self.grid_indices[i])
-        
+            # スライドで選択中グリッドの中身が変わるため選択を解除
+            self._clear_grid_selection()
+
         self.show_image()
 
     def previous_image(self):
@@ -2850,7 +2865,9 @@ class ImageViewer(QMainWindow):
             for i in range(4):
                 if self.grid_indices[i]:
                     self.grid_positions[i] = (self.grid_positions[i] - 1) % len(self.grid_indices[i])
-        
+            # スライドで選択中グリッドの中身が変わるため選択を解除
+            self._clear_grid_selection()
+
         self.show_image()
 
     def keyPressEvent(self, event):
@@ -3296,6 +3313,12 @@ class ImageViewer(QMainWindow):
     def delete_current_image(self):
         if not self.images:
             return
+        # グリッドモードで明示的な選択が無い場合は誤操作防止のため無効化。
+        # （スライドで current_image_index が表示と乖離するため、勝手に
+        #  古い画像が削除される事故を防ぐ）
+        if self.display_mode == 'grid' and self.selected_grid == -1:
+            self.show_message("グリッドをクリックして選択してから Delete を押してください")
+            return
         current_image_path = self.images[self.current_image_index]
         # 確認メッセージの表示
         reply = QMessageBox.question(self, '画像を削除',
@@ -3311,6 +3334,8 @@ class ImageViewer(QMainWindow):
                     self.current_image_index %= len(self.images)
                     # グリッドシステムを再初期化（削除された画像を反映）
                     self.initialize_grid_system()
+                    # 削除でグリッド内容が変わるため選択状態は解除
+                    self._clear_grid_selection()
                     self.show_image()
                 else:
                     # 画像リストが空になった場合はラベルをクリア
@@ -3648,13 +3673,20 @@ class ImageViewer(QMainWindow):
         if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
             QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
             return
-        
+
         # image_pathが無効な値（None、False、空文字列など）の場合は現在の画像を取得
         if not image_path or not isinstance(image_path, str):
             if not hasattr(self, 'images') or not self.images:
                 QMessageBox.warning(self, "エラー", "表示する画像がありません。")
                 return
-            
+
+            # グリッドモードで明示的な選択が無い場合は誤操作防止のため無効化。
+            # （スライドで current_image_index が表示と乖離するため、勝手に
+            #  古い画像がトグルされて意図せずお気に入りが解除される事故を防ぐ）
+            if self.display_mode == 'grid' and self.selected_grid == -1:
+                self.show_message("グリッドをクリックして選択してから F を押してください")
+                return
+
             try:
                 image_path = self.images[self.current_image_index]
             except (IndexError, TypeError) as e:
@@ -3683,6 +3715,10 @@ class ImageViewer(QMainWindow):
 
                 # Pillow デコードなしでハートオーバーレイだけ更新
                 self._refresh_favorite_overlay_only()
+
+                # お気に入り後はグリッドの選択状態を解除（スライドで対象が
+                # ズレた状態のまま再度トグルしてしまう事故を防ぐ）
+                self._clear_grid_selection()
 
                 # 状態を表示
                 status = "お気に入りに追加" if is_favorite else "お気に入りから削除"
