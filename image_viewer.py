@@ -3424,21 +3424,24 @@ class ImageViewer(QMainWindow):
                 tag_menu = context_menu.addMenu("🏷️ タグ")
                 
                 # タグ編集
-                tag_edit_action = tag_menu.addAction("✏️ タグを編集 (T)")
+                # 注: BMP 範囲（U+270F 等）の絵文字 + U+FE0F は macOS の PyInstaller
+                #     ビルドでフォントフォールバックが壊れて CJK 互換に化けるので、
+                #     >= U+1F300 の絵文字に置き換える（📝 等は安全）。
+                tag_edit_action = tag_menu.addAction("📝 タグを編集 (T)")
                 tag_edit_action.triggered.connect(self.show_tag_edit_dialog)
-                
+
                 tag_menu.addSeparator()
-                
+
                 # 自動タグ付け
                 auto_tag_action = tag_menu.addAction("🤖 プロンプト解析で自動タグ付け (A)")
                 auto_tag_action.triggered.connect(self.show_auto_tag_dialog)
-                
+
                 tag_menu.addSeparator()
-                
+
                 # 設定メニュー
-                exclude_settings_action = tag_menu.addAction("⚙️ 除外キーワード設定")
+                exclude_settings_action = tag_menu.addAction("🚫 除外キーワード設定")
                 exclude_settings_action.triggered.connect(self.show_exclude_settings_dialog)
-                
+
                 mapping_rules_action = tag_menu.addAction("🔧 自動タグルール設定")
                 mapping_rules_action.triggered.connect(self.show_mapping_rules_dialog)
 
@@ -3548,7 +3551,8 @@ class ImageViewer(QMainWindow):
 
         # 区切り線 + 環境設定
         file_menu.addSeparator()
-        settings_action = QAction('⚙️ 環境設定…', self)
+        # ⚙️ は VS-16 でフォント化け事例があるため代替絵文字を使用
+        settings_action = QAction('🔧 環境設定…', self)
         settings_action.setShortcut('Ctrl+,')
         settings_action.triggered.connect(self.show_settings_dialog)
         file_menu.addAction(settings_action)
@@ -3689,7 +3693,7 @@ class ImageViewer(QMainWindow):
             tag_menu.addSeparator()
             
             # メンテナンス項目
-            maintenance_menu = tag_menu.addMenu('🛠️ メンテナンス')
+            maintenance_menu = tag_menu.addMenu('🧰 メンテナンス')
             migrate_paths_action = QAction('ファイルパスの一括置換 (移行用)', self)
             migrate_paths_action.triggered.connect(self.show_migrate_paths_dialog)
             maintenance_menu.addAction(migrate_paths_action)
