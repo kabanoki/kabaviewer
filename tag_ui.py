@@ -542,16 +542,24 @@ class TagEditDialog(QDialog):
             self.tag_input_widget.set_tags(current_tags)
     
     def save_tags(self):
-        """タグを保存"""
+        """タグを保存（SQLite/QSettings は即時、EXIF はバックグラウンド）"""
         new_tags = self.tag_input_widget.get_tags()
-        
+
         try:
-            # タグを完全に置き換える（既存のsave_tagsメソッドを使用）
-            self.tag_manager.save_tags(self.image_path, new_tags)
-            
+            # SQLite + QSettings のみ同期で書き、EXIF は viewer._tag_writer に逃がす
+            self.tag_manager.save_tags(self.image_path, new_tags, write_to_file=False)
+
+            viewer = self.parent()
+            tag_writer = getattr(viewer, '_tag_writer', None) if viewer is not None else None
+            if tag_writer is not None:
+                tag_writer.enqueue(self.image_path, new_tags)
+            else:
+                # ワーカーが無い構成（タグ管理機能オフ等）では同期書き込みにフォールバック
+                self.tag_manager._save_to_exif(self.image_path, new_tags)
+
             QMessageBox.information(self, "成功", "タグが保存されました。")
             self.accept()
-            
+
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"タグの保存に失敗しました: {str(e)}")
 

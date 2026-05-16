@@ -87,6 +87,63 @@ class FavoriteWriteWorker(QThread):
                 self._dec_pending()
 
 
+class TagWriteWorker(QThread):
+    """画像タグの EXIF 書き込みをバックグラウンドで直列実行するワーカー。
+
+    SQLite / QSettings はメインスレッドで先に書き込まれている前提。
+    キューに (file_path, tags) を積み、run() ループで piexif による
+    EXIF 書き込みのみを行う。
+    """
+
+    write_failed = pyqtSignal(str, str)  # file_path, error_message
+
+    _SENTINEL = None
+
+    def __init__(self, tag_manager, parent=None):
+        super().__init__(parent)
+        self._tag_manager = tag_manager
+        self._queue = queue.Queue()
+        self._pending = 0
+        self._pending_lock = QMutex()
+
+    def _inc_pending(self):
+        self._pending_lock.lock()
+        self._pending += 1
+        self._pending_lock.unlock()
+
+    def _dec_pending(self):
+        self._pending_lock.lock()
+        self._pending = max(0, self._pending - 1)
+        self._pending_lock.unlock()
+
+    def pending_count(self) -> int:
+        self._pending_lock.lock()
+        try:
+            return self._pending
+        finally:
+            self._pending_lock.unlock()
+
+    def enqueue(self, file_path, tags):
+        self._inc_pending()
+        self._queue.put((file_path, list(tags)))
+
+    def stop(self):
+        self._queue.put(self._SENTINEL)
+
+    def run(self):
+        while True:
+            item = self._queue.get()
+            if item is self._SENTINEL:
+                break
+            file_path, tags = item
+            try:
+                self._tag_manager.write_tags_to_exif_only(file_path, tags)
+            except Exception as e:
+                self.write_failed.emit(file_path, str(e))
+            finally:
+                self._dec_pending()
+
+
 class ExifInfoDialog(QDialog):
     """画像メタデータを美しく表示するダイアログ"""
     def __init__(self, exif_data, image_path, parent=None, parse_only=False):
@@ -1024,6 +1081,14 @@ class ImageViewer(QMainWindow):
             self.tag_manager.add_favorite_listener(self._on_favorite_state_changed)
         else:
             self._favorite_writer = None
+
+        # タグ EXIF 書き込みワーカー（piexif による軽量書き込みでも数十ms かかるためバックグラウンド化）
+        if self.tag_manager is not None:
+            self._tag_writer = TagWriteWorker(self.tag_manager, parent=self)
+            self._tag_writer.write_failed.connect(self._on_tag_write_failed)
+            self._tag_writer.start()
+        else:
+            self._tag_writer = None
 
         # オーバーレイ再描画用キャッシュ
         self._last_single_canvas: QPixmap = None
@@ -3568,6 +3633,35 @@ class ImageViewer(QMainWindow):
             self._favorite_writer.stop()
             self._favorite_writer.wait()
 
+        # TagWriteWorker を安全停止（キューに残った EXIF 書き込みを flush してから終了）
+        if getattr(self, '_tag_writer', None) is not None and self._tag_writer.isRunning():
+            initial_pending = self._tag_writer.pending_count()
+            if initial_pending > 0:
+                tag_progress = QProgressDialog(
+                    f"タグ情報を保存しています... (0/{initial_pending})",
+                    None, 0, initial_pending, self
+                )
+                tag_progress.setWindowTitle("終了処理")
+                tag_progress.setWindowModality(Qt.WindowModal)
+                tag_progress.setCancelButton(None)
+                tag_progress.setMinimumDuration(0)
+                tag_progress.setValue(0)
+                tag_progress.show()
+                while True:
+                    remaining = self._tag_writer.pending_count()
+                    done = max(0, initial_pending - remaining)
+                    tag_progress.setValue(done)
+                    tag_progress.setLabelText(
+                        f"タグ情報を保存しています... ({done}/{initial_pending})"
+                    )
+                    QApplication.processEvents()
+                    if remaining == 0:
+                        break
+                    self._tag_writer.wait(50)
+                tag_progress.close()
+            self._tag_writer.stop()
+            self._tag_writer.wait()
+
         # お気に入りリスナーを解除（複数インスタンス生成時の重複通知・参照リークを防ぐ）
         if self.tag_manager is not None:
             self.tag_manager.remove_favorite_listener(self._on_favorite_state_changed)
@@ -3595,6 +3689,12 @@ class ImageViewer(QMainWindow):
         file_name = os.path.basename(file_path)
         print(f"[FavoriteWriteWorker] EXIF 書き込み失敗: {file_name}: {error_message}")
         self.show_message(f"⚠ EXIF 書き込みに失敗しました: {file_name}", duration=3000)
+
+    def _on_tag_write_failed(self, file_path, error_message):
+        """タグ EXIF 書き込み失敗の通知（log_only ポリシー）"""
+        file_name = os.path.basename(file_path)
+        print(f"[TagWriteWorker] EXIF タグ書き込み失敗: {file_name}: {error_message}")
+        self.show_message(f"⚠ EXIF タグ書き込みに失敗しました: {file_name}", duration=3000)
 
     def _on_favorite_state_changed(self, file_path, is_favorite):
         """TagManager 経由でお気に入り状態が変更された際のキャッシュ同期。
