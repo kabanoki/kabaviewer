@@ -498,6 +498,33 @@ QLabel#MetaCardTitle {{
     letter-spacing: 0.5px;
 }}
 
+/* タグチップ（サイドバー「現在のタグ」内）— アクセントの淡いパステルで控えめに */
+QFrame#TagChip {{
+    background-color: rgba(78, 161, 255, 0.12);
+    border: 1px solid rgba(78, 161, 255, 0.35);
+    border-radius: 12px;
+}}
+QFrame#TagChip:hover {{
+    background-color: rgba(78, 161, 255, 0.22);
+    border-color: {t.accent};
+}}
+QLabel#TagChipLabel {{
+    color: {t.accent};
+    font-size: 11px;
+    font-weight: 500;
+    background: transparent;
+}}
+QPushButton#TagChipCopy {{
+    background-color: transparent;
+    border: none;
+    color: {t.text_muted};
+    font-size: 11px;
+    padding: 0;
+}}
+QPushButton#TagChipCopy:hover {{
+    color: {t.accent};
+}}
+
 /* メッセージラベル（一時表示） */
 QLabel#TransientMessage {{
     background-color: {t.surface_elevated};
