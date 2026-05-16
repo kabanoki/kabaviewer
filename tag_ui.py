@@ -371,21 +371,15 @@ class TagInputWidget(QWidget):
         
         # タグ表示エリア
         self.tags_scroll = QScrollArea()
+        self.tags_scroll.setObjectName("TagsScroll")
         self.tags_widget = QWidget()
         self.tags_layout = QGridLayout(self.tags_widget)
         self.tags_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        
+
         self.tags_scroll.setWidget(self.tags_widget)
         self.tags_scroll.setWidgetResizable(True)
         self.tags_scroll.setMaximumHeight(120)
-        self.tags_scroll.setStyleSheet("""
-            QScrollArea {
-                border: 1px solid #cccccc;
-                border-radius: 4px;
-                background-color: #f8f8f8;
-            }
-        """)
-        
+
         layout.addWidget(self.tags_scroll)
     
     def add_tag_from_input(self):
@@ -708,30 +702,16 @@ class TagTab(QWidget):
         
         # 画像表示ラベル
         self.preview_label = QLabel()
+        self.preview_label.setObjectName("PreviewLabel")
         self.preview_label.setMinimumHeight(200)
-        self.preview_label.setStyleSheet("""
-            QLabel {
-                background-color: #f0f0f0;
-                border: 2px dashed #cccccc;
-                border-radius: 8px;
-                color: #666666;
-                font-size: 14px;
-            }
-        """)
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setText("画像を選択してください")
-        self.preview_label.setScaledContents(False)  # アスペクト比を保持
+        self.preview_label.setScaledContents(False)
         preview_layout.addWidget(self.preview_label)
-        
+
         # 画像情報ラベル
         self.image_info_label = QLabel()
-        self.image_info_label.setStyleSheet("""
-            QLabel {
-                color: #666666;
-                font-size: 11px;
-                padding: 5px;
-            }
-        """)
+        self.image_info_label.setObjectName("FileInfoLabel")
         self.image_info_label.setWordWrap(True)
         preview_layout.addWidget(self.image_info_label)
         
@@ -1194,14 +1174,10 @@ class TagTab(QWidget):
                     Qt.SmoothTransformation  # 高品質なスケーリング
                 )
                 
-                # プレビューラベルの背景をリセットしてから画像を表示
-                self.preview_label.setStyleSheet("""
-                    QLabel {
-                        background-color: #f8f8f8;
-                        border: 1px solid #cccccc;
-                        border-radius: 8px;
-                    }
-                """)
+                # ロード済みフラグでスタイル切替（theme.py の [loaded="true"] セレクタ）
+                self.preview_label.setProperty("loaded", True)
+                self.preview_label.style().unpolish(self.preview_label)
+                self.preview_label.style().polish(self.preview_label)
                 self.preview_label.setPixmap(scaled_pixmap)
                 
                 # 画像情報を表示
@@ -1315,16 +1291,7 @@ class FavoritesTab(QWidget):
         
         # 統計情報
         self.stats_label = QLabel("読み込み中...")
-        self.stats_label.setStyleSheet("""
-            QLabel {
-                color: #666666;
-                font-size: 12px;
-                padding: 10px;
-                background-color: #f5f5f5;
-                border-radius: 4px;
-                margin: 5px 0px;
-            }
-        """)
+        self.stats_label.setObjectName("FileInfoLabel")
         manage_layout.addWidget(self.stats_label)
         
         left_layout.addLayout(manage_layout)
@@ -1385,30 +1352,16 @@ class FavoritesTab(QWidget):
         
         # 画像表示ラベル
         self.preview_label = QLabel()
+        self.preview_label.setObjectName("PreviewLabel")
         self.preview_label.setMinimumHeight(200)
-        self.preview_label.setStyleSheet("""
-            QLabel {
-                background-color: #f0f0f0;
-                border: 2px dashed #cccccc;
-                border-radius: 8px;
-                color: #666666;
-                font-size: 14px;
-            }
-        """)
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setText("お気に入り画像を選択してください")
         self.preview_label.setScaledContents(False)
         preview_layout.addWidget(self.preview_label)
-        
+
         # 画像情報ラベル
         self.image_info_label = QLabel()
-        self.image_info_label.setStyleSheet("""
-            QLabel {
-                color: #666666;
-                font-size: 11px;
-                padding: 5px;
-            }
-        """)
+        self.image_info_label.setObjectName("FileInfoLabel")
         self.image_info_label.setWordWrap(True)
         preview_layout.addWidget(self.image_info_label)
         
@@ -1539,13 +1492,10 @@ class FavoritesTab(QWidget):
                     Qt.SmoothTransformation
                 )
                 
-                self.preview_label.setStyleSheet("""
-                    QLabel {
-                        background-color: #f8f8f8;
-                        border: 1px solid #cccccc;
-                        border-radius: 8px;
-                    }
-                """)
+                # ロード済みフラグでスタイル切替（theme.py の [loaded="true"] セレクタ）
+                self.preview_label.setProperty("loaded", True)
+                self.preview_label.style().unpolish(self.preview_label)
+                self.preview_label.style().polish(self.preview_label)
                 self.preview_label.setPixmap(scaled_pixmap)
                 
                 # 画像情報を表示

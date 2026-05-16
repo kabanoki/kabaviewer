@@ -67,15 +67,15 @@ class FavoriteTab(QWidget):
         left_layout.addWidget(add_button)
 
         remove_button = QPushButton("選択を削除する")
-        remove_button.setStyleSheet("background-color: red; color: white;")
+        remove_button.setObjectName("DangerButton")
         remove_button.clicked.connect(self.remove_selected_entry)
         left_layout.addWidget(remove_button)
 
         # 右側: プレビューエリア
         self.preview_label = QLabel()
+        self.preview_label.setObjectName("PreviewLabel")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(300, 200)
-        self.preview_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
         self.preview_label.setText("フォルダを選択すると\nプレビューが表示されます")
 
         splitter.addWidget(left_widget)
