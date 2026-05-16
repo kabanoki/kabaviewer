@@ -4477,26 +4477,31 @@ class ImageViewer(QMainWindow):
         QApplication.processEvents()
         
         processed_images = 0
-        
+
+        # ── フェーズ1: 全フォルダの解析（読み込み）を先に終わらせる ──
+        #   タグ登録（書き込み）はキューに積むだけにし、ワーカーは
+        #   解析がすべて終わるまで起動しない。これにより:
+        #   - 解析時のディスク I/O が EXIF 書き込みワーカーと競合しない
+        #   - 2 フォルダ目以降も 1 フォルダ目と同等の速度で解析できる
+        pending_submissions = []  # [(items, results, list_name), ...]
+
         for folder_idx, folder in enumerate(folders):
             if progress.wasCanceled():
                 break
-            
+
             image_files = folder_image_counts[folder]
-            
+
             if not image_files:
                 continue
-            
+
             folder_name = os.path.basename(folder)
-            
+
             try:
-                # 各画像を解析
                 results = {}
                 for img_idx, image_path in enumerate(image_files):
                     if progress.wasCanceled():
                         break
-                    
-                    # 5枚ごとまたは100枚ごとにUIを更新
+
                     if img_idx % 5 == 0 or img_idx == len(image_files) - 1:
                         progress.setValue(processed_images)
                         progress.setLabelText(
@@ -4505,7 +4510,7 @@ class ImageViewer(QMainWindow):
                             f"全体: {processed_images}/{total_images}"
                         )
                         QApplication.processEvents()
-                    
+
                     try:
                         metadata = self.get_exif_data(image_path)
                         prompt_data = analyzer._parse_ai_metadata(metadata)
@@ -4514,26 +4519,31 @@ class ImageViewer(QMainWindow):
                     except Exception as e:
                         print(f"解析エラー ({image_path}): {e}")
                         results[image_path] = []
-                    
+
                     processed_images += 1
-                
+
                 if progress.wasCanceled():
                     break
-                
+
                 if results:
-                    # キューに追加（選択されたモードを使用）
                     items = [(path, os.path.basename(path)) for path in results.keys()]
                     list_name = f"{folder_name} ({len(items)}枚)"
-                    self.start_background_tag_application(items, is_replace_mode, results, list_name)
+                    pending_submissions.append((items, results, list_name))
                     added_count += 1
-                    
+
             except Exception as e:
                 print(f"フォルダ処理エラー ({folder}): {e}")
                 processed_images += len(image_files)
                 continue
-        
+
         progress.setValue(total_images)
         progress.close()
+
+        # ── フェーズ2: 解析完了後にまとめてキューへ投入 ──
+        # ここで初めて TagApplyWorker が動き出す。以降は背後で
+        # 順次タグ登録が走るがユーザーは別の操作を続行できる。
+        for items, results, list_name in pending_submissions:
+            self.start_background_tag_application(items, is_replace_mode, results, list_name)
         
         mode_text = "🔄 置換モード" if is_replace_mode else "📝 追加モード"
         
