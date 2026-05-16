@@ -4567,6 +4567,11 @@ class ImageViewer(QMainWindow):
         cache_writes = []
         cache_writes_lock = __import__("threading").Lock()
 
+        # 進捗更新のスロットル（最低 120ms 間隔で UI 更新）
+        import time as _time
+        last_ui_update = [0.0]
+        UI_UPDATE_INTERVAL = 0.12
+
         def _parse_one(image_path):
             # キャッシュヒットなら decode/解析を完全スキップ
             if parse_cache is not None:
@@ -4613,8 +4618,10 @@ class ImageViewer(QMainWindow):
                             print(f"解析 future エラー: {e}")
                         done_count += 1
                         processed_images += 1
-                        # 進捗イベントは間引く（GUI 負荷削減）
-                        if done_count % 20 == 0 or done_count == len(image_files):
+                        # 進捗イベントは時間ベースで間引く（GUI 負荷削減）
+                        now = _time.monotonic()
+                        if (now - last_ui_update[0] >= UI_UPDATE_INTERVAL
+                                or done_count == len(image_files)):
                             progress.setValue(processed_images)
                             progress.setLabelText(
                                 f"📁 {folder_name} ({folder_idx + 1}/{len(folders)})\n"
@@ -4622,6 +4629,7 @@ class ImageViewer(QMainWindow):
                                 f"全体: {processed_images}/{total_images}"
                             )
                             QApplication.processEvents()
+                            last_ui_update[0] = now
 
                 if progress.wasCanceled():
                     break
@@ -5058,11 +5066,20 @@ class ImageViewer(QMainWindow):
         
         self.tag_apply_worker.start()
 
+    _bg_progress_last_ui_ms = 0.0
+
     def update_background_progress(self, current, message):
-        """バックグラウンド処理の進捗を更新"""
+        """バックグラウンド処理の進捗を更新（120ms 単位で間引き）"""
+        import time
+        now = time.monotonic() * 1000.0
+        # progress bar の数値は常に更新（軽い）
         self.background_progress_bar.setValue(current)
-        
-        # キュー情報を付加
+
+        # ラベルの更新は重いのでスロットル
+        if (now - self._bg_progress_last_ui_ms) < 120.0:
+            return
+        self._bg_progress_last_ui_ms = now
+
         if self.tag_apply_queue:
             queue_info = f"[{self.current_queue_index + 1}/{len(self.tag_apply_queue)}]"
             remaining = len(self.tag_apply_queue) - self.current_queue_index - 1
