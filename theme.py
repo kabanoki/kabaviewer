@@ -385,6 +385,18 @@ QLabel#DialogHeading {{
     color: {t.text};
     border: 1px solid {t.border_subtle};
 }}
+QLabel#DescLabel {{
+    color: {t.text_muted};
+}}
+QLabel#InfoBanner {{
+    color: {t.accent};
+    background-color: rgba(78, 161, 255, 0.10);
+    border: 1px solid rgba(78, 161, 255, 0.35);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-weight: 600;
+    margin: 5px 0;
+}}
 
 /* メタデータカード用フレーム */
 QFrame#MetaCard {{
