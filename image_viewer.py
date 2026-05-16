@@ -3401,6 +3401,13 @@ class ImageViewer(QMainWindow):
         zip_images_action.setEnabled(False)  # 初期状態では無効
         self.zip_images_action = zip_images_action  # 後で有効/無効を切り替えるために保存
 
+        # 区切り線 + 環境設定
+        file_menu.addSeparator()
+        settings_action = QAction('⚙️ 環境設定…', self)
+        settings_action.setShortcut('Ctrl+,')
+        settings_action.triggered.connect(self.show_settings_dialog)
+        file_menu.addAction(settings_action)
+
         # [表示]メニュー
         show_menu = menubar.addMenu('表示')
 
@@ -3559,6 +3566,28 @@ class ImageViewer(QMainWindow):
         about_action = QAction('バージョン情報', self)
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
+
+    def show_settings_dialog(self):
+        """環境設定ダイアログを開く。テーマメニューと同期する。"""
+        from settings_dialog import SettingsDialog
+        from theme import load_theme_name
+        dlg = SettingsDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            # メニューのチェック状態を新しいテーマに同期
+            current = load_theme_name()
+            if hasattr(self, 'theme_dark_action'):
+                self.theme_dark_action.setChecked(current == "dark")
+            if hasattr(self, 'theme_light_action'):
+                self.theme_light_action.setChecked(current == "light")
+            # ハートボタンキャッシュ破棄 → 再描画
+            self._heart_button_state = None
+            try:
+                if self.images:
+                    self.show_image()
+            except Exception:
+                pass
+            self.show_message("環境設定を保存しました")
+        # キャンセル時は SettingsDialog 内で元に戻し済み
 
     def switch_theme(self, name):
         """テーマを切り替えて QSettings に保存する。"""

@@ -7,6 +7,18 @@
 """
 
 from PyQt5.QtCore import QSettings
+from PyQt5.QtGui import QFont
+
+
+# ---- アクセントカラーのバリエーション ----
+# settings dialog から選ばせる前提で id -> (dark_main, dark_hover, dark_pressed, light_main, light_hover, light_pressed)
+ACCENT_PRESETS = {
+    "blue":   ("#4ea1ff", "#6ab4ff", "#3a8ce0", "#1f6feb", "#3b85ff", "#175bc7"),
+    "cyan":   ("#4ed1d6", "#6fdde2", "#3aafb4", "#0aa3aa", "#2bb8c0", "#0e848a"),
+    "purple": ("#a48aff", "#b9a4ff", "#8b71e6", "#7c4ddf", "#9067e8", "#5e35b1"),
+    "teal":   ("#5fbf90", "#79cda3", "#4ca77b", "#2e9d6f", "#42b481", "#247a55"),
+}
+ACCENT_DEFAULT = "blue"
 
 
 # ---- デザイントークン（コード側からも参照できるよう公開）----
@@ -21,7 +33,7 @@ class DarkTokens:
     text = "#e8e8ea"
     text_muted = "#9c9ca5"
     text_disabled = "#5a5a64"
-    accent = "#4ea1ff"        # プライマリ操作・選択
+    accent = "#4ea1ff"        # プライマリ操作・選択（apply_theme で上書きされる）
     accent_hover = "#6ab4ff"
     accent_pressed = "#3a8ce0"
     heart = "#ff5277"         # お気に入り
@@ -40,7 +52,7 @@ class LightTokens:
     text = "#1c1c20"
     text_muted = "#5a5d68"
     text_disabled = "#b0b0b8"
-    accent = "#1f6feb"
+    accent = "#1f6feb"             # apply_theme で上書きされる
     accent_hover = "#3b85ff"
     accent_pressed = "#175bc7"
     heart = "#e6395b"
@@ -537,18 +549,19 @@ QLabel#TransientMessage {{
 """
 
 
-DARK_QSS = _build_qss(DarkTokens)
-LIGHT_QSS = _build_qss(LightTokens)
-
 _THEME_KEY = "ui_theme"
-_DEFAULT = "dark"
+_ACCENT_KEY = "ui_accent"
+_FONT_PT_KEY = "ui_font_pt"
+_DEFAULT_THEME = "dark"
+_DEFAULT_FONT_PT = 13
+FONT_PT_RANGE = (10, 22)  # スライダーの上下限
 
 
 def load_theme_name():
     """QSettings から保存済みのテーマ名を取得する。デフォルトはダーク。"""
     s = QSettings("MyCompany", "ImageViewerApp")
-    val = s.value(_THEME_KEY, _DEFAULT)
-    return val if val in ("dark", "light") else _DEFAULT
+    val = s.value(_THEME_KEY, _DEFAULT_THEME)
+    return val if val in ("dark", "light") else _DEFAULT_THEME
 
 
 def save_theme_name(name):
@@ -558,18 +571,90 @@ def save_theme_name(name):
     s.setValue(_THEME_KEY, name)
 
 
-def tokens_for(name):
-    return DarkTokens if name == "dark" else LightTokens
+def load_accent_id():
+    s = QSettings("MyCompany", "ImageViewerApp")
+    val = s.value(_ACCENT_KEY, ACCENT_DEFAULT)
+    return val if val in ACCENT_PRESETS else ACCENT_DEFAULT
 
 
-def apply_theme(app, name=None):
+def save_accent_id(name):
+    if name not in ACCENT_PRESETS:
+        return
+    s = QSettings("MyCompany", "ImageViewerApp")
+    s.setValue(_ACCENT_KEY, name)
+
+
+def load_font_pt():
+    s = QSettings("MyCompany", "ImageViewerApp")
+    try:
+        pt = int(s.value(_FONT_PT_KEY, _DEFAULT_FONT_PT))
+    except (TypeError, ValueError):
+        pt = _DEFAULT_FONT_PT
+    lo, hi = FONT_PT_RANGE
+    return max(lo, min(hi, pt))
+
+
+def save_font_pt(pt):
+    try:
+        pt = int(pt)
+    except (TypeError, ValueError):
+        return
+    lo, hi = FONT_PT_RANGE
+    pt = max(lo, min(hi, pt))
+    s = QSettings("MyCompany", "ImageViewerApp")
+    s.setValue(_FONT_PT_KEY, pt)
+
+
+def tokens_for(name, accent_id=None):
+    """指定テーマのトークンを返す（インスタンスをクローンして accent を差し替え）。"""
+    base = DarkTokens if name == "dark" else LightTokens
+
+    class _T:  # 動的に accent を差し替えた軽量トークン
+        pass
+
+    t = _T()
+    for k in dir(base):
+        if k.startswith("_"):
+            continue
+        setattr(t, k, getattr(base, k))
+
+    if accent_id is None:
+        accent_id = load_accent_id()
+    preset = ACCENT_PRESETS.get(accent_id, ACCENT_PRESETS[ACCENT_DEFAULT])
+    if name == "dark":
+        t.accent, t.accent_hover, t.accent_pressed = preset[0], preset[1], preset[2]
+    else:
+        t.accent, t.accent_hover, t.accent_pressed = preset[3], preset[4], preset[5]
+    return t
+
+
+def apply_theme(app, name=None, accent_id=None):
     """QApplication にテーマを適用する。
 
-    name=None で QSettings の値を利用。
+    name=None / accent_id=None で QSettings の値を利用。
     """
     if name is None:
         name = load_theme_name()
     if name not in ("dark", "light"):
-        name = _DEFAULT
-    app.setStyleSheet(DARK_QSS if name == "dark" else LIGHT_QSS)
+        name = _DEFAULT_THEME
+    if accent_id is None:
+        accent_id = load_accent_id()
+
+    tokens = tokens_for(name, accent_id)
+    app.setStyleSheet(_build_qss(tokens))
     return name
+
+
+def apply_font_size(app, pt=None):
+    """QApplication 全体の基本フォントサイズを設定する。
+
+    個別ウィジェットで font-size が指定されているものは上書きされないが、
+    殆どのラベル・ボタンはアプリ既定フォントを継承するので体感上の文字
+    サイズが連動する。
+    """
+    if pt is None:
+        pt = load_font_pt()
+    font = app.font()
+    font.setPointSize(int(pt))
+    app.setFont(font)
+    return pt
