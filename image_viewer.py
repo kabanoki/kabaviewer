@@ -4126,8 +4126,76 @@ class ImageViewer(QMainWindow):
     def hide_message(self):
         self.message_label.hide()
     
+    @staticmethod
+    def _fast_read_png_text_chunks(image_path):
+        """PNG ファイルの先頭から tEXt/iTXt チャンクのみを抽出する軽量リーダー。
+
+        PIL.Image.open は PNG ヘッダ + 関連チャンクを全部読むため、
+        大きな PNG（10MB+）だと若干オーバーヘッドがある。
+        IDAT に到達したら読み込みを止めることでテキストメタデータだけを
+        最短距離で取り出す。失敗時は None を返して呼び出し側で PIL に
+        フォールバックする。
+        """
+        import struct
+        try:
+            with open(image_path, "rb") as f:
+                if f.read(8) != b"\x89PNG\r\n\x1a\n":
+                    return None  # PNG ではない
+                info = {}
+                while True:
+                    hdr = f.read(8)
+                    if len(hdr) < 8:
+                        break
+                    length, ctype = struct.unpack(">I4s", hdr)
+                    if ctype == b"IDAT":
+                        break  # 画像本体に到達 → メタデータ読み込み終了
+                    data = f.read(length)
+                    f.read(4)  # CRC スキップ
+                    if ctype == b"tEXt":
+                        try:
+                            k, _, v = data.partition(b"\x00")
+                            info[k.decode("latin-1", errors="ignore")] = v.decode("latin-1", errors="ignore")
+                        except Exception:
+                            pass
+                    elif ctype == b"iTXt":
+                        try:
+                            parts = data.split(b"\x00", 4)
+                            if len(parts) >= 5:
+                                k = parts[0].decode("utf-8", errors="ignore")
+                                info[k] = parts[4].decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
+                    elif ctype == b"zTXt":
+                        try:
+                            k, _, rest = data.partition(b"\x00")
+                            # rest[0] = compression method, rest[1:] = zlib data
+                            import zlib
+                            v = zlib.decompress(rest[1:]).decode("latin-1", errors="ignore")
+                            info[k.decode("latin-1", errors="ignore")] = v
+                        except Exception:
+                            pass
+                return info
+        except Exception:
+            return None
+
     def get_exif_data(self, image_path):
         """画像ファイルからEXIF情報とAI生成画像のメタデータを取得"""
+        # PNG の軽量パス: PIL を介さず最小限のチャンクだけ読む
+        if image_path.lower().endswith(".png"):
+            fast_info = self._fast_read_png_text_chunks(image_path)
+            if fast_info is not None:
+                ai_metadata = {}
+                for key, value in fast_info.items():
+                    if key.lower() in [
+                        'parameters', 'prompt', 'negative_prompt', 'steps', 'sampler',
+                        'cfg_scale', 'seed', 'model', 'software', 'comment', 'description',
+                        'workflow', 'comfyui', 'automatic1111'
+                    ]:
+                        ai_metadata[f"AI_{key}"] = value
+                    elif isinstance(value, (str, int, float)) and len(str(value)) < 10000:
+                        ai_metadata[f"Meta_{key}"] = value
+                return ai_metadata
+
         try:
             with Image.open(image_path) as img:
                 # 標準的なEXIF情報を取得
