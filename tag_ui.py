@@ -1807,85 +1807,94 @@ class TagApplyWorker(QThread):
 
     def run(self):
         import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         start_time = time.time()
-
-        # 並列度: EXIF を別ワーカーへ逃がすため重い書き込みは無くなるが、
-        # SQLite の書き込みロック競合を避けるためにも控えめに 2 並列まで
-        # （EXIF 同期フォールバック時はさらに 1 並列に）
         defer_exif = self.tag_writer is not None
-        if not defer_exif:
-            max_workers = 1
-        elif len(self.items) < 5:
-            max_workers = 1
-        else:
-            max_workers = 2
-
-        def apply_single(item):
-            image_path, filename = item
-            try:
-                if image_path in self.analysis_results:
-                    tags = self.analysis_results[image_path]
-                    if tags:
-                        if self.is_replace_mode:
-                            # SQLite + QSettings を即時、EXIF はワーカー
-                            success = self.tag_manager.save_tags(
-                                image_path, tags, write_to_file=not defer_exif
-                            )
-                            final_tags = tags
-                        else:
-                            existing_tags = self.tag_manager.get_tags(image_path)
-                            new_tags = sorted(set(existing_tags + tags))
-                            success = self.tag_manager.save_tags(
-                                image_path, new_tags, write_to_file=not defer_exif
-                            )
-                            final_tags = new_tags
-
-                        if success:
-                            # EXIF をワーカーキューへ
-                            if defer_exif and self.tag_writer is not None:
-                                try:
-                                    self.tag_writer.enqueue(image_path, final_tags)
-                                except Exception as e:
-                                    print(f"[TagApplyWorker] EXIF enqueue 失敗 ({filename}): {e}")
-
-                            with self.progress_lock:
-                                self.applied_count += 1
-                                self.total_tags += len(tags)
-                            return True
-                        else:
-                            with self.progress_lock:
-                                self.failed_count += 1
-                                self.failed_items.append(filename)
-                            return False
-                return True
-            except Exception as e:
-                print(f"Apply error ({filename}): {e}")
-                with self.progress_lock:
-                    self.failed_count += 1
-                    self.failed_items.append(filename)
-                return False
+        total = len(self.items)
 
         try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(apply_single, item): item for item in self.items}
+            # ── 準備フェーズ: 全件の最終タグセットを構築 ──
+            # 追加モードでは既存タグとマージするため一括 DB 取得 (1 クエリ)
+            existing_map = {}
+            if not self.is_replace_mode:
+                paths = [p for p, _ in self.items]
+                existing_map = self.tag_manager.get_tags_map(paths)
 
-                completed = 0
-                for future in as_completed(futures):
-                    if self.is_cancelled:
-                        for f in futures:
-                            f.cancel()
-                        break
+            self.progress_updated.emit(0, f"準備中... (0/{total})")
 
-                    completed += 1
-                    _, filename = futures[future]
-                    self.progress_updated.emit(completed, f"適用中... ({completed}/{len(self.items)}) {filename}")
+            prepared = []  # [(image_path, filename, final_tags), ...]
+            skipped_no_change = 0
+            skipped_no_tags = 0
+            for idx, (image_path, filename) in enumerate(self.items):
+                if self.is_cancelled:
+                    break
+                tags = self.analysis_results.get(image_path)
+                if not tags:
+                    skipped_no_tags += 1
+                    continue
+
+                if self.is_replace_mode:
+                    final_tags = sorted(set(tags))
+                else:
+                    existing = existing_map.get(image_path, []) or []
+                    final_tags = sorted(set(existing) | set(tags))
+                    # 変化が無ければ書き込みスキップ（Phase B）
+                    if set(final_tags) == set(existing):
+                        skipped_no_change += 1
+                        with self.progress_lock:
+                            self.applied_count += 1  # 既に適用済みとして集計
+                        continue
+
+                prepared.append((image_path, filename, final_tags))
+
+                # 進捗イベントを軽めに（50 件ごと or 最後）
+                if (idx + 1) % 50 == 0 or idx == total - 1:
+                    self.progress_updated.emit(idx + 1, f"準備中... ({idx + 1}/{total})")
+
+            if self.is_cancelled:
+                elapsed_time = time.time() - start_time
+                self.completion_finished.emit(self.applied_count, self.total_tags, elapsed_time, self.failed_count)
+                return
+
+            # ── DB 書き込みフェーズ: 1 トランザクションでまとめて UPDATE/INSERT ──
+            if prepared:
+                self.progress_updated.emit(0, f"DB 書き込み中... (0/{len(prepared)})")
+                bulk_items = [(p, t) for (p, _f, t) in prepared]
+                results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=not defer_exif)
+                ok_set = {fp for fp, ok in results if ok}
+
+                for (path, filename, final_tags) in prepared:
+                    if path in ok_set:
+                        with self.progress_lock:
+                            self.applied_count += 1
+                            self.total_tags += len(final_tags)
+                    else:
+                        with self.progress_lock:
+                            self.failed_count += 1
+                            self.failed_items.append(filename)
+
+                # ── EXIF をワーカーキューへ（直列）──
+                if defer_exif and self.tag_writer is not None:
+                    for (path, _f, final_tags) in prepared:
+                        if path in ok_set:
+                            try:
+                                self.tag_writer.enqueue(path, final_tags)
+                            except Exception as e:
+                                print(f"[TagApplyWorker] EXIF enqueue 失敗: {e}")
+
+            # 進捗の最終更新
+            self.progress_updated.emit(
+                total,
+                f"完了 ({self.applied_count}/{total}, "
+                f"スキップ {skipped_no_change}, タグ無し {skipped_no_tags})"
+            )
 
             elapsed_time = time.time() - start_time
             if not self.is_cancelled:
                 self.completion_finished.emit(self.applied_count, self.total_tags, elapsed_time, self.failed_count)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error_occurred.emit(str(e), self.applied_count, self.failed_count)
 
 

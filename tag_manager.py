@@ -574,6 +574,122 @@ class TagManager:
         SQLite と QSettings はメインスレッドで先に書き込まれている前提。
         """
         self._save_to_exif(file_path, tags)
+
+    def get_tags_map(self, file_paths):
+        """複数ファイルのタグを SQLite から bulk 取得して dict を返す。
+
+        DB ヒットしないものは [] とする（EXIF への自動フォールバックは
+        パフォーマンス重視で行わない）。1 クエリで全件取得する。
+        """
+        if not file_paths:
+            return {}
+        result = {p: [] for p in file_paths}
+        # SQLite の IN 句に渡せるよう適度に分割（999 パラメータ上限）
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            CHUNK = 500
+            paths = list(file_paths)
+            for i in range(0, len(paths), CHUNK):
+                chunk = paths[i:i + CHUNK]
+                placeholders = ",".join("?" * len(chunk))
+                cursor.execute(
+                    f"""
+                    SELECT file_path, tags FROM image_tags
+                    WHERE (file_path, updated_at) IN (
+                        SELECT file_path, MAX(updated_at) FROM image_tags
+                        WHERE file_path IN ({placeholders})
+                        GROUP BY file_path
+                    )
+                    """,
+                    chunk,
+                )
+                for fp, tags_json in cursor.fetchall():
+                    try:
+                        result[fp] = json.loads(tags_json) if tags_json else []
+                    except (json.JSONDecodeError, TypeError):
+                        result[fp] = []
+        finally:
+            conn.close()
+        return result
+
+    def save_tags_bulk(self, items, write_to_file=False):
+        """[(file_path, tags), ...] を 1 トランザクションで保存する高速版。
+
+        各アイテムについて:
+        1) SQLite に対し UPDATE を試行（軽量パス）
+        2) 行が無ければ hash 計算 + INSERT (フルパス)
+        ※ コミットは最後に 1 回だけ → fsync の回数を最小化。
+
+        QSettings バックアップは batch 内でループするだけで十分軽量。
+        EXIF への書き込みは write_to_file=True 指定時のみ行う
+        （通常は呼び出し側でワーカーキューへ enqueue する）。
+
+        Returns: [(file_path, success: bool), ...]
+        """
+        if not items:
+            return []
+
+        results = []
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN")
+            for file_path, tags in items:
+                clean_tags = sorted(set(tags)) if tags else []
+                tags_json = json.dumps(clean_tags, ensure_ascii=False)
+                cursor.execute(
+                    'UPDATE image_tags SET tags=?, updated_at=CURRENT_TIMESTAMP WHERE file_path=?',
+                    (tags_json, file_path),
+                )
+                if cursor.rowcount == 0:
+                    # 新規レコード: hash + INSERT
+                    try:
+                        if os.path.exists(file_path):
+                            file_hash = self.calculate_file_hash(file_path)
+                            if file_hash:
+                                file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+                                cursor.execute(
+                                    'INSERT INTO image_tags '
+                                    '(file_hash, file_path, file_name, tags, is_favorite, updated_at, file_modified_at) '
+                                    'VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP, ?)',
+                                    (file_hash, file_path, os.path.basename(file_path), tags_json, file_mod_time),
+                                )
+                                results.append((file_path, True))
+                            else:
+                                results.append((file_path, False))
+                        else:
+                            results.append((file_path, False))
+                    except Exception as e:
+                        print(f"[save_tags_bulk INSERT 失敗] {file_path}: {e}")
+                        results.append((file_path, False))
+                else:
+                    results.append((file_path, True))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[save_tags_bulk] トランザクション失敗: {e}")
+            return [(fp, False) for fp, _ in items]
+        finally:
+            conn.close()
+
+        # QSettings は SQLite トランザクションの外で（軽量）
+        for file_path, tags in items:
+            try:
+                clean_tags = sorted(set(tags)) if tags else []
+                self._save_to_qsettings_backup(file_path, clean_tags)
+            except Exception as e:
+                print(f"[save_tags_bulk QSettings] {file_path}: {e}")
+
+        # EXIF はオプション（通常はワーカーキューに任せる）
+        if write_to_file:
+            for file_path, tags in items:
+                try:
+                    self._save_to_exif(file_path, sorted(set(tags)) if tags else [])
+                except Exception as e:
+                    print(f"[save_tags_bulk EXIF] {file_path}: {e}")
+
+        return results
     
     def remove_tags(self, file_path, tags):
         """画像からタグを削除"""
