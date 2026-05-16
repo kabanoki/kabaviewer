@@ -3583,7 +3583,22 @@ class ImageViewer(QMainWindow):
         sidebar_action = show_menu.addAction('サイドバー切り替え (S)')
         sidebar_action.triggered.connect(self.toggle_sidebar)
 
-        # 区切り線
+        show_menu.addSeparator()
+
+        # UI テーマ切替（ダーク / ライト）
+        from theme import load_theme_name
+        current_theme = load_theme_name()
+        theme_menu = show_menu.addMenu('🎨 テーマ')
+        self.theme_dark_action = QAction('🌙 ダーク', self, checkable=True)
+        self.theme_dark_action.setChecked(current_theme == "dark")
+        self.theme_dark_action.triggered.connect(lambda: self.switch_theme("dark"))
+        theme_menu.addAction(self.theme_dark_action)
+
+        self.theme_light_action = QAction('☀️ ライト', self, checkable=True)
+        self.theme_light_action.setChecked(current_theme == "light")
+        self.theme_light_action.triggered.connect(lambda: self.switch_theme("light"))
+        theme_menu.addAction(self.theme_light_action)
+
         show_menu.addSeparator()
 
         # 並び順のサブメニューを追加
@@ -3719,6 +3734,26 @@ class ImageViewer(QMainWindow):
         about_action = QAction('バージョン情報', self)
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
+
+    def switch_theme(self, name):
+        """テーマを切り替えて QSettings に保存する。"""
+        from theme import apply_theme, save_theme_name
+        save_theme_name(name)
+        applied = apply_theme(QApplication.instance(), name)
+        # メニューのチェック状態を同期
+        if hasattr(self, 'theme_dark_action'):
+            self.theme_dark_action.setChecked(applied == "dark")
+        if hasattr(self, 'theme_light_action'):
+            self.theme_light_action.setChecked(applied == "light")
+        # ハートボタンのキャッシュ状態を破棄して次回更新で再描画されるように
+        self._heart_button_state = None
+        # 現在画像のハート再描画（背景色が変わったのでオーバーレイのコントラスト調整は再描画で対応）
+        try:
+            if hasattr(self, 'show_image') and self.images:
+                self.show_image()
+        except Exception:
+            pass
+        self.show_message(f"テーマを切り替えました: {'ダーク' if applied == 'dark' else 'ライト'}")
 
     def show_about_dialog(self):
         """アプリのバージョン情報を表示するダイアログ"""
