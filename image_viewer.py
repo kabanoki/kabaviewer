@@ -4479,18 +4479,30 @@ class ImageViewer(QMainWindow):
         processed_images = 0
 
         # ── フェーズ1: 全フォルダの解析（読み込み）を先に終わらせる ──
-        #   タグ登録（書き込み）はキューに積むだけにし、ワーカーは
-        #   解析がすべて終わるまで起動しない。これにより:
-        #   - 解析時のディスク I/O が EXIF 書き込みワーカーと競合しない
-        #   - 2 フォルダ目以降も 1 フォルダ目と同等の速度で解析できる
+        # ThreadPool で 4 並列に解析（Pillow は I/O 中に GIL を解放するので
+        # 外部 SSD なら数倍速）。EXIF 書き込みは未だ起動しないので
+        # 競合なしで読み込み専有できる。
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         pending_submissions = []  # [(items, results, list_name), ...]
+        # 並列度（CPU コア x 1〜2、上限 6）
+        max_workers = max(2, min(6, (os.cpu_count() or 4)))
+
+        def _parse_one(image_path):
+            try:
+                metadata = self.get_exif_data(image_path)
+                prompt_data = analyzer._parse_ai_metadata(metadata)
+                suggested_tags = analyzer.analyze_prompt_data(prompt_data)
+                return image_path, sorted(list(suggested_tags))
+            except Exception as e:
+                print(f"解析エラー ({image_path}): {e}")
+                return image_path, []
 
         for folder_idx, folder in enumerate(folders):
             if progress.wasCanceled():
                 break
 
             image_files = folder_image_counts[folder]
-
             if not image_files:
                 continue
 
@@ -4498,29 +4510,31 @@ class ImageViewer(QMainWindow):
 
             try:
                 results = {}
-                for img_idx, image_path in enumerate(image_files):
-                    if progress.wasCanceled():
-                        break
-
-                    if img_idx % 5 == 0 or img_idx == len(image_files) - 1:
-                        progress.setValue(processed_images)
-                        progress.setLabelText(
-                            f"📁 {folder_name} ({folder_idx + 1}/{len(folders)})\n"
-                            f"🖼️ {img_idx + 1}/{len(image_files)}枚解析中...\n"
-                            f"全体: {processed_images}/{total_images}"
-                        )
-                        QApplication.processEvents()
-
-                    try:
-                        metadata = self.get_exif_data(image_path)
-                        prompt_data = analyzer._parse_ai_metadata(metadata)
-                        suggested_tags = analyzer.analyze_prompt_data(prompt_data)
-                        results[image_path] = sorted(list(suggested_tags))
-                    except Exception as e:
-                        print(f"解析エラー ({image_path}): {e}")
-                        results[image_path] = []
-
-                    processed_images += 1
+                done_count = 0
+                # 1 フォルダごとに並列で全画像を解析
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = {ex.submit(_parse_one, p): p for p in image_files}
+                    for fut in as_completed(futures):
+                        if progress.wasCanceled():
+                            for f in futures:
+                                f.cancel()
+                            break
+                        try:
+                            path, tags = fut.result()
+                            results[path] = tags
+                        except Exception as e:
+                            print(f"解析 future エラー: {e}")
+                        done_count += 1
+                        processed_images += 1
+                        # 進捗イベントは間引く（GUI 負荷削減）
+                        if done_count % 20 == 0 or done_count == len(image_files):
+                            progress.setValue(processed_images)
+                            progress.setLabelText(
+                                f"📁 {folder_name} ({folder_idx + 1}/{len(folders)})\n"
+                                f"🖼️ {done_count}/{len(image_files)}枚解析中...\n"
+                                f"全体: {processed_images}/{total_images}"
+                            )
+                            QApplication.processEvents()
 
                 if progress.wasCanceled():
                     break
