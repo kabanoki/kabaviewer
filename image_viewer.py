@@ -1345,7 +1345,8 @@ class ImageViewer(QMainWindow):
             self._tag_writer = None
 
         # 画像プリフェッチャ（次/前画像をバックグラウンドでデコードしておく）
-        self._image_prefetcher = ImagePrefetcher(parent=self, cache_size=6)
+        # シングル用 6 + 4分割の各セル先読み 12 = ~18 程度が見込まれるため余裕を持たせる
+        self._image_prefetcher = ImagePrefetcher(parent=self, cache_size=24)
         self._image_prefetcher.start()
 
         # オーバーレイ再描画用キャッシュ
@@ -3035,25 +3036,32 @@ class ImageViewer(QMainWindow):
         # 現在のindexを中心とした4枚の画像インデックスを計算
         indices = self.calculate_grid_indices()
         
+        # 各セルの目標サイズ（後段のプリフェッチ要求でも使う）
+        cell_targets = []
+        for i in range(4):
+            label_size = self.grid_labels[i].size()
+            cell_targets.append(
+                (max(1, label_size.width() - 10), max(1, label_size.height() - 10))
+            )
+
         for i, img_index in enumerate(indices):
             if 0 <= img_index < len(self.images):
                 try:
                     image_path = self.images[img_index]
-                    with Image.open(image_path) as img:
-                        # グリッド用にサイズ調整（小さめ）
-                        label_size = self.grid_labels[i].size()
-                        preview_size = (label_size.width() - 10, label_size.height() - 10)
-                        
-                        # 縦横比を維持してリサイズ
-                        img.thumbnail(preview_size, Image.Resampling.LANCZOS)
-                        
-                        # QPixmapに変換（バイト配列を変数に保持）
-                        image_rgba = img.convert("RGBA")
-                        w, h = image_rgba.size
-                        image_bytes = image_rgba.tobytes("raw", "RGBA")
-                        qimage = QImage(image_bytes, w, h, QImage.Format_RGBA8888).copy()
-                        pixmap = QPixmap.fromImage(qimage)
-                    
+                    target_w, target_h = cell_targets[i]
+
+                    # プリフェッチキャッシュ参照（ヒット時は decode/resize スキップ）
+                    qimage = self._image_prefetcher.get_cached(image_path, target_w, target_h)
+                    if qimage is None:
+                        qimage = ImagePrefetcher.decode_scaled(image_path, target_w, target_h)
+                        if qimage is None:
+                            qimage = ImagePrefetcher.decode_scaled_with_pillow(image_path, target_w, target_h)
+                        if qimage is None:
+                            raise RuntimeError("decode 失敗")
+                        self._image_prefetcher.put_cache(image_path, target_w, target_h, qimage)
+
+                    pixmap = QPixmap.fromImage(qimage)
+
                     # ハートなしピクセルマップを保存（オーバーレイ再描画用）
                     self._last_grid_pixmaps[i] = pixmap.copy()
 
@@ -3097,8 +3105,30 @@ class ImageViewer(QMainWindow):
                     self.grid_labels[i].setStyleSheet("border: 3px solid red;")
                 else:
                     self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
-        
+
         self.update_window_title()
+
+        # 4セルの次位置をバックグラウンドでプリフェッチ
+        self._prefetch_neighbors_grid(cell_targets)
+
+    def _prefetch_neighbors_grid(self, cell_targets):
+        """グリッド表示の各セルで次の位置の画像を非同期プリフェッチする。"""
+        if not self.images or not getattr(self, 'grid_indices', None):
+            return
+        n = len(self.images)
+        if n <= 1:
+            return
+        for i in range(4):
+            grid_array = self.grid_indices[i] if i < len(self.grid_indices) else None
+            if not grid_array:
+                continue
+            target_w, target_h = cell_targets[i]
+            # 次・前・2つ先（各セル独立）を投げる
+            for offset in (1, -1, 2):
+                pos = (self.grid_positions[i] + offset) % len(grid_array)
+                idx = grid_array[pos]
+                if 0 <= idx < n:
+                    self._image_prefetcher.request(self.images[idx], target_w, target_h)
 
     def _refresh_favorite_overlay_only(self):
         """Pillow デコードなしでハートアイコンの表示だけを更新する軽量メソッド。
