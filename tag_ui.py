@@ -544,20 +544,25 @@ class TagEditDialog(QDialog):
             self.tag_input_widget.set_tags(current_tags)
     
     def save_tags(self):
-        """タグを保存（SQLite/QSettings は即時、EXIF はバックグラウンド）"""
+        """タグを保存（SQLite/QSettings は即時、EXIF は設定に応じて）"""
         new_tags = self.tag_input_widget.get_tags()
+        try:
+            from theme import load_write_exif
+            exif_enabled = load_write_exif()
+        except Exception:
+            exif_enabled = True
 
         try:
-            # SQLite + QSettings のみ同期で書き、EXIF は viewer._tag_writer に逃がす
+            # SQLite + QSettings のみ同期で書く（EXIF は無効ならスキップ、有効ならワーカー or フォールバック）
             self.tag_manager.save_tags(self.image_path, new_tags, write_to_file=False)
 
-            viewer = self.parent()
-            tag_writer = getattr(viewer, '_tag_writer', None) if viewer is not None else None
-            if tag_writer is not None:
-                tag_writer.enqueue(self.image_path, new_tags)
-            else:
-                # ワーカーが無い構成（タグ管理機能オフ等）では同期書き込みにフォールバック
-                self.tag_manager._save_to_exif(self.image_path, new_tags)
+            if exif_enabled:
+                viewer = self.parent()
+                tag_writer = getattr(viewer, '_tag_writer', None) if viewer is not None else None
+                if tag_writer is not None:
+                    tag_writer.enqueue(self.image_path, new_tags)
+                else:
+                    self.tag_manager._save_to_exif(self.image_path, new_tags)
 
             QMessageBox.information(self, "成功", "タグが保存されました。")
             self.accept()
@@ -1807,9 +1812,16 @@ class TagApplyWorker(QThread):
 
     def run(self):
         import time
+        try:
+            from theme import load_write_exif
+            exif_enabled = load_write_exif()
+        except Exception:
+            exif_enabled = True
 
         start_time = time.time()
-        defer_exif = self.tag_writer is not None
+        # EXIF を書く設定 かつ ワーカーがある場合に deferred
+        defer_exif = exif_enabled and (self.tag_writer is not None)
+        skip_exif_entirely = not exif_enabled
         total = len(self.items)
 
         try:
@@ -1860,7 +1872,10 @@ class TagApplyWorker(QThread):
             if prepared:
                 self.progress_updated.emit(0, f"DB 書き込み中... (0/{len(prepared)})")
                 bulk_items = [(p, t) for (p, _f, t) in prepared]
-                results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=not defer_exif)
+                # write_to_file: defer_exif=True ならワーカー側で書くので False
+                # skip_exif_entirely なら DB のみで完全に書かない
+                inline_exif = (not defer_exif) and (not skip_exif_entirely)
+                results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=inline_exif)
                 ok_set = {fp for fp, ok in results if ok}
 
                 for (path, filename, final_tags) in prepared:

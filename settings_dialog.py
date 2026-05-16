@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QSpinBox,
     QPushButton, QDialogButtonBox, QGroupBox, QRadioButton, QButtonGroup,
-    QComboBox, QApplication, QFrame,
+    QComboBox, QApplication, QFrame, QCheckBox,
 )
 
 from theme import (
@@ -20,6 +20,7 @@ from theme import (
     load_theme_name, save_theme_name,
     load_accent_id, save_accent_id,
     load_font_pt, save_font_pt,
+    load_write_exif, save_write_exif,
     FONT_PT_RANGE, ACCENT_PRESETS,
 )
 
@@ -44,6 +45,7 @@ class SettingsDialog(QDialog):
         self._original_font_pt = load_font_pt()
         self._original_theme = load_theme_name()
         self._original_accent = load_accent_id()
+        self._original_write_exif = load_write_exif()
 
         self._build_ui()
         self._load_current_values()
@@ -105,6 +107,22 @@ class SettingsDialog(QDialog):
         accent_layout.addStretch()
         root.addWidget(accent_group)
 
+        # ── タグ書き込み挙動 ────────────────────────────────
+        tag_group = QGroupBox("タグ保存先")
+        tag_layout = QVBoxLayout(tag_group)
+        self.write_exif_check = QCheckBox("画像ファイルにも EXIF タグを書き込む")
+        self.write_exif_check.setToolTip(
+            "OFF にすると DB と内部設定にのみタグを保存し、画像本体は変更しません。\n"
+            "大量画像の一括タグ付けが劇的に高速になります。\n"
+            "ON のままだとポータビリティ（他ツールからもタグが見える）は保たれます。"
+        )
+        tag_layout.addWidget(self.write_exif_check)
+        hint = QLabel("OFF にすると一括タグ付けが高速になりますが、画像本体にタグは残りません。")
+        hint.setObjectName("MutedHint")
+        hint.setWordWrap(True)
+        tag_layout.addWidget(hint)
+        root.addWidget(tag_group)
+
         # 即時プレビュー: 変更を即 QApplication に反映
         self.theme_dark.toggled.connect(self._on_theme_changed)
         self.theme_light.toggled.connect(self._on_theme_changed)
@@ -147,6 +165,9 @@ class SettingsDialog(QDialog):
         idx = self.accent_combo.findData(self._original_accent)
         if idx >= 0:
             self.accent_combo.setCurrentIndex(idx)
+
+        # EXIF 書き込み
+        self.write_exif_check.setChecked(self._original_write_exif)
 
     def _update_font_preview(self, pt):
         font = self.font_preview.font()
@@ -200,6 +221,7 @@ class SettingsDialog(QDialog):
         save_font_pt(self.font_spin.value())
         save_theme_name("dark" if self.theme_dark.isChecked() else "light")
         save_accent_id(self.accent_combo.currentData() or "blue")
+        save_write_exif(self.write_exif_check.isChecked())
         self.accept()
 
     def _reject(self):
@@ -211,9 +233,10 @@ class SettingsDialog(QDialog):
         self.reject()
 
     def _reset_defaults(self):
-        """既定値（フォント 13pt / ダーク / ブルー）にセットする。OK で確定。"""
+        """既定値（フォント 13pt / ダーク / ブルー / EXIF 書き込み ON）にセット。"""
         self.font_spin.setValue(13)
         self.theme_dark.setChecked(True)
         idx = self.accent_combo.findData("blue")
         if idx >= 0:
             self.accent_combo.setCurrentIndex(idx)
+        self.write_exif_check.setChecked(True)
