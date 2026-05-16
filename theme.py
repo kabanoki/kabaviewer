@@ -557,6 +557,23 @@ _DEFAULT_FONT_PT = 13
 FONT_PT_RANGE = (10, 22)  # スライダーの上下限
 
 
+# EXIF 書き込み有効フラグ（タグ保存時に画像ファイル本体にもタグを書くか）
+# False の場合 DB と QSettings のみ更新し、画像本体には触らない
+# → 大量画像の処理が劇的に高速になるがポータビリティは下がる
+_WRITE_EXIF_KEY = "tags_write_exif"
+_DEFAULT_WRITE_EXIF = True
+
+
+def load_write_exif():
+    s = QSettings("MyCompany", "ImageViewerApp")
+    return bool(s.value(_WRITE_EXIF_KEY, _DEFAULT_WRITE_EXIF, type=bool))
+
+
+def save_write_exif(enabled):
+    s = QSettings("MyCompany", "ImageViewerApp")
+    s.setValue(_WRITE_EXIF_KEY, bool(enabled))
+
+
 def load_theme_name():
     """QSettings から保存済みのテーマ名を取得する。デフォルトはダーク。"""
     s = QSettings("MyCompany", "ImageViewerApp")
