@@ -309,6 +309,77 @@ QStatusBar {{
     color: {t.text_muted};
     border-top: 1px solid {t.border};
 }}
+
+/* === Sidebar (object name based) ====================================== */
+QWidget#Sidebar {{
+    background-color: {t.surface};
+    border-left: 1px solid {t.border};
+}}
+QWidget#SidebarContent, QWidget#SidebarContent > QWidget {{
+    background-color: transparent;
+}}
+QLabel#SidebarTitle {{
+    color: {t.text};
+    font-size: 15px;
+    font-weight: 600;
+    padding: 8px 0;
+    border-bottom: 1px solid {t.border};
+}}
+QLabel#SidebarPlaceholder {{
+    color: {t.text_muted};
+    font-style: italic;
+    padding: 20px;
+}}
+QPushButton#PrimaryButton {{
+    background-color: {t.accent};
+    color: white;
+    border: 1px solid {t.accent};
+}}
+QPushButton#PrimaryButton:hover {{
+    background-color: {t.accent_hover};
+    border-color: {t.accent_hover};
+}}
+QPushButton#PrimaryButton:pressed {{
+    background-color: {t.accent_pressed};
+    border-color: {t.accent_pressed};
+}}
+QPushButton#DangerButton {{
+    background-color: {t.danger};
+    color: white;
+    border: 1px solid {t.danger};
+}}
+QPushButton#DangerButton:hover {{
+    background-color: {t.danger_hover};
+    border-color: {t.danger_hover};
+}}
+QPushButton#IconButton {{
+    padding: 4px 8px;
+    font-size: 14px;
+}}
+
+/* メタデータカード用フレーム */
+QFrame#MetaCard {{
+    background-color: {t.surface_elevated};
+    border: 1px solid {t.border_subtle};
+    border-radius: 6px;
+}}
+QLabel#MetaCardTitle {{
+    color: {t.text_muted};
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}}
+
+/* メッセージラベル（一時表示） */
+QLabel#TransientMessage {{
+    background-color: {t.surface_elevated};
+    color: {t.text};
+    border: 1px solid {t.border};
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 13px;
+}}
 """
 
 
