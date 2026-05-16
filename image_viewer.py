@@ -4904,8 +4904,13 @@ class ImageViewer(QMainWindow):
         list_name = request['list_name']
         
         from tag_ui import TagApplyWorker
-        
-        self.tag_apply_worker = TagApplyWorker(items, self.tag_manager, is_replace_mode, analysis_results)
+
+        # EXIF 書き込みは TagWriteWorker に逃がしてディスク I/O 競合を回避
+        tag_writer = getattr(self, '_tag_writer', None)
+        self.tag_apply_worker = TagApplyWorker(
+            items, self.tag_manager, is_replace_mode, analysis_results,
+            tag_writer=tag_writer,
+        )
         
         # UI更新の接続
         self.tag_apply_worker.progress_updated.connect(self.update_background_progress)
