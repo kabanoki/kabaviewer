@@ -12,7 +12,7 @@ from PIL import Image
 import json
 
 # スキーマバージョン: テーブル/カラム追加のたびに +1 する
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 「未分類」は仮想グループとして予約する（DB に実体を作らない）
 UNCLASSIFIED_GROUP = "未分類"
@@ -160,6 +160,18 @@ def _migrate(conn, db_path):
                 group_id TEXT NOT NULL
             )
         ''')
+
+    if current < 3:
+        # 検索パフォーマンス改善用の追加インデックス
+        # - idx_is_favorite: 「お気に入りのみ」フィルタの高速化
+        # - idx_file_path_updated_at: 「file_path 単位の最新レコード」抽出
+        #   (search_by_tag_groups / get_favorite_status 等で多用)
+        # - idx_updated_at: 全体の ORDER BY updated_at DESC 系
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_is_favorite ON image_tags(is_favorite)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_file_path_updated_at ON image_tags(file_path, updated_at)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_updated_at ON image_tags(updated_at)')
+        # オプティマイザに最新の統計情報を渡す
+        conn.execute('ANALYZE')
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
