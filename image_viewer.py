@@ -2340,11 +2340,34 @@ class ImageViewer(QMainWindow):
             )
             row.addWidget(copy_btn)
 
+            # 自動タグ付けルール追加ボタン（タグシステム利用可能時のみ）
+            if TAG_SYSTEM_AVAILABLE and self.tag_manager is not None:
+                rule_btn = QPushButton("🔧")
+                rule_btn.setObjectName("IconButton")
+                rule_btn.setToolTip(f"「{lora['name']}」を自動タグ付けルールのキーワードとして追加")
+                rule_btn.setFixedSize(22, 18)
+                rule_btn.clicked.connect(
+                    lambda checked=False, n=lora["name"]: self._open_rule_dialog_for_lora(n)
+                )
+                row.addWidget(rule_btn)
+
             container = QWidget()
             container.setLayout(row)
             layout.addWidget(container)
 
         return frame
+
+    def _open_rule_dialog_for_lora(self, lora_name):
+        """LoRA 名をキーワードに据えて自動タグ付けルール設定ダイアログを開く。"""
+        try:
+            from auto_tag_analyzer import AutoTagAnalyzer
+            from tag_ui import show_mapping_rules_dialog
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"タグシステムを読み込めませんでした: {e}")
+            return
+        analyzer = AutoTagAnalyzer()
+        show_mapping_rules_dialog(analyzer, parent=self, tag_manager=self.tag_manager,
+                                  initial_keyword=lora_name)
 
     def create_sidebar_parameters_section(self, parameters):
         """サイドバー用のパラメータセクションを作成"""

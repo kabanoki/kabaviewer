@@ -2606,11 +2606,12 @@ def show_auto_tag_dialog(image_paths, metadata_getter_func, tag_manager, parent=
 
 class MappingRulesDialog(QDialog):
     """キーワード→タグのマッピングルール管理ダイアログ"""
-    
-    def __init__(self, analyzer, parent=None, tag_manager=None):
+
+    def __init__(self, analyzer, parent=None, tag_manager=None, initial_keyword=None):
         super().__init__(parent)
         self.analyzer = analyzer
         self.tag_manager = tag_manager
+        self._initial_keyword = initial_keyword
 
         # 生成タグ欄のオートコンプリート用デバウンスタイマー
         # QSettings の "tag_completion_debounce_ms" で可変（既定 300ms、0 なら即時）
@@ -2631,6 +2632,11 @@ class MappingRulesDialog(QDialog):
         self.setModal(True)
         self.setWindowTitle("自動タグ付けルール設定")
         self.resize(800, 600)
+
+        # 外部から渡されたキーワードを初期値として設定
+        if self._initial_keyword:
+            self.keyword_input.setText(self._initial_keyword)
+            self.tags_input.setFocus()  # タグ入力にカーソルを置く
     
     def eventFilter(self, obj, event):
         """イベントフィルター：Enterキーでオートコンプリート確定"""
@@ -3176,62 +3182,41 @@ class MappingRulesDialog(QDialog):
         self.rules_table.setRowCount(total_rules)
         
         row = 0
-        
+
         # デフォルトルールを表示（削除不可）
         for keyword, tags in default_rules.items():
-            # キーワード（デフォルトマーク付き）
+            # キーワード（デフォルトマーク付き）— 背景はテーマ任せ、文字色もテーマ任せ
             keyword_item = QTableWidgetItem(f"📌 {keyword}")
-            keyword_item.setBackground(QColor(245, 245, 245))  # グレー背景
             self.rules_table.setItem(row, 0, keyword_item)
-            
+
             # タグ（カンマ区切りで表示）
             tags_text = ", ".join(tags)
             tags_item = QTableWidgetItem(tags_text)
-            tags_item.setBackground(QColor(245, 245, 245))  # グレー背景
             self.rules_table.setItem(row, 1, tags_item)
-            
+
             # 削除不可ラベル
             disabled_label = QLabel("🔒 デフォルト")
+            disabled_label.setObjectName("MutedHint")
             disabled_label.setAlignment(Qt.AlignCenter)
-            disabled_label.setStyleSheet("""
-                QLabel {
-                    background-color: #e0e0e0;
-                    color: #757575;
-                    padding: 4px 8px;
-                    border-radius: 3px;
-                    font-size: 11px;
-                }
-            """)
             self.rules_table.setCellWidget(row, 2, disabled_label)
             row += 1
-        
+
         # カスタムルールを表示（削除可能）
         for keyword, tags in custom_rules.items():
             # キーワード
             self.rules_table.setItem(row, 0, QTableWidgetItem(keyword))
-            
+
             # タグ（カンマ区切りで表示）
             tags_text = ", ".join(tags)
             self.rules_table.setItem(row, 1, QTableWidgetItem(tags_text))
-            
+
             # 削除ボタン
             delete_button = QPushButton("🗑️ 削除")
-            delete_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #f44336;
-                    border: none;
-                    color: white;
-                    padding: 4px 8px;
-                    border-radius: 3px;
-                }
-                QPushButton:hover {
-                    background-color: #d32f2f;
-                }
-            """)
+            delete_button.setObjectName("DangerButton")
             delete_button.clicked.connect(lambda checked, k=keyword: self.remove_rule(k))
             self.rules_table.setCellWidget(row, 2, delete_button)
             row += 1
-        
+
         self.rules_table.resizeRowsToContents()
     
     def add_rule(self):
@@ -3295,9 +3280,9 @@ def show_exclude_settings_dialog(analyzer, parent=None):
     dialog.exec_()
 
 
-def show_mapping_rules_dialog(analyzer, parent=None, tag_manager=None):
+def show_mapping_rules_dialog(analyzer, parent=None, tag_manager=None, initial_keyword=None):
     """マッピングルール設定ダイアログを表示するユーティリティ関数"""
-    dialog = MappingRulesDialog(analyzer, parent, tag_manager)
+    dialog = MappingRulesDialog(analyzer, parent, tag_manager, initial_keyword=initial_keyword)
     dialog.exec_()
 
 
