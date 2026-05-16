@@ -20,67 +20,77 @@ from tag_manager import TagManager, UNCLASSIFIED_GROUP
 from PIL import Image
 
 class MultiTagCompleter(QCompleter):
-    """複数タグ入力に対応したカスタムCompleter"""
-    
+    """複数タグ入力に対応したカスタムCompleter
+
+    パフォーマンス対策:
+    - all_tags の lowercase 版 (_lower_pairs) をキャッシュして毎回 lower() を呼ばない
+    - 候補数の上限を MAX_RESULTS で抑制（巨大ポップアップ描画を回避）
+    - QStringListModel を使い回し setStringList する（毎回 new しない）
+    """
+
+    MAX_RESULTS = 50
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.all_tags = []
+        self._lower_pairs = []  # [(tag, tag_lower), ...] — set_all_tags で更新
         self.existing_tags = set()
         self.current_tag = ""
         self.line_edit = None
         self.pending_completion = None  # Enterキーで確定する候補を保持
         self.is_completing = False  # 補完処理中かどうかのフラグ
-        
+
+        # 結果格納用モデル（使い回し）
+        self._model = QStringListModel()
+        self.setModel(self._model)
+
         # 選択時のシグナルを接続
-        self.activated[str].connect(self.on_activated_delayed)  # 遅延処理を使用
+        self.activated[str].connect(self.on_activated_delayed)
         self.highlighted[str].connect(self.on_highlighted)
-        # print("[デバッグ] MultiTagCompleter初期化完了")
-        
-    def set_tags_data(self, all_tags, existing_tags, current_tag):
-        """タグデータを設定"""
-        self.all_tags = all_tags
+
+    def set_all_tags(self, all_tags):
+        """候補となる全タグを一度だけセット。lower 済みペアもキャッシュする。"""
+        # 重複や空文字を除いた安全なリスト
+        self.all_tags = [t for t in all_tags if isinstance(t, str) and t]
+        self._lower_pairs = [(t, t.lower()) for t in self.all_tags]
+
+    def set_tags_data(self, existing_tags, current_tag):
+        """逐次更新される存在タグと現在入力タグを設定し、候補を再計算する。"""
         self.existing_tags = existing_tags
         self.current_tag = current_tag
-        
-        # フィルタリングされたタグリストを作成
+
         filtered_tags = self.filter_tags()
-        
-        # モデルを更新
-        model = QStringListModel(filtered_tags)
-        self.setModel(model)
-    
+        self._model.setStringList(filtered_tags)
+
     def setLineEdit(self, line_edit):
         """LineEditを設定"""
         self.line_edit = line_edit
-    
+
     def filter_tags(self):
-        """現在の入力に基づいてタグをフィルタリング"""
+        """現在の入力に基づいてタグをフィルタリング（高速化 + 上限あり）"""
         if not self.current_tag:
             return []
-        
-        filtered_tags = []
-        current_input_lower = self.current_tag.lower()
-        
-        # print(f"[デバッグ] filter_tags: current_tag='{self.current_tag}', existing_tags={self.existing_tags}")
-        
-        for tag in self.all_tags:
-            try:
-                tag_lower = tag.lower()
-                # 現在の入力にマッチし、完全一致でない場合のみ候補に追加
-                if (current_input_lower in tag_lower and 
-                    tag_lower != current_input_lower):
-                    # 既存タグとの完全一致のみを除外（部分一致は許可）
-                    # 現在のタグが既存タグに含まれていても、より長いタグは候補として表示
-                    if tag_lower not in self.existing_tags or len(tag) > len(self.current_tag):
-                        filtered_tags.append(tag)
-            except Exception as e:
-                # print(f"[デバッグ] タグフィルタリングエラー: {e}, tag: {tag}")
+        needle = self.current_tag.lower()
+        if not needle:
+            return []
+
+        existing = self.existing_tags
+        current_len = len(self.current_tag)
+        max_n = self.MAX_RESULTS
+
+        out = []
+        for tag, tag_lower in self._lower_pairs:
+            if needle not in tag_lower:
                 continue
-        
-        # print(f"[デバッグ] filter_tags結果: {len(filtered_tags)}個の候補")
-        # if filtered_tags:
-        #     print(f"[デバッグ] 最初の5個: {filtered_tags[:5]}")
-        return filtered_tags
+            if tag_lower == needle:
+                continue
+            # 既存タグと完全一致のみ除外（より長い候補は許可）
+            if tag_lower in existing and len(tag) <= current_len:
+                continue
+            out.append(tag)
+            if len(out) >= max_n:
+                break
+        return out
     
     def splitPath(self, path):
         """パスを分割して現在のタグ部分のみを返す"""
@@ -2820,19 +2830,20 @@ class MappingRulesDialog(QDialog):
     def setup_tags_autocomplete(self):
         """生成タグ入力フィールドにオートコンプリート機能を設定"""
         try:
-            # 既存のタグデータベースから候補を取得
-            all_tags = self.get_all_available_tags()
-            
-            if not all_tags:
+            # 既存のタグデータベースから候補を取得（ダイアログ生存中はキャッシュ）
+            self._cached_all_tags = self.get_all_available_tags()
+
+            if not self._cached_all_tags:
                 print("[デバッグ] タグ候補が空です")
                 return
-            
+
             # カスタムMultiTagCompleterを作成
             self.tags_completer = MultiTagCompleter()
             self.tags_completer.setCaseSensitivity(Qt.CaseInsensitive)
             self.tags_completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
-            self.tags_completer.setMaxVisibleItems(10)  # 最大10個の候補を表示
-            # インライン補完を無効化
+            self.tags_completer.setMaxVisibleItems(10)
+            # 全タグセットを 1 回だけセット（lowercase キャッシュ作成）
+            self.tags_completer.set_all_tags(self._cached_all_tags)
             self.tags_completer.setCompletionPrefix("")
             
             # 入力フィールドにCompleterを設定
@@ -3055,21 +3066,14 @@ class MappingRulesDialog(QDialog):
                 return
             
             # 既存のタグを除外して候補を絞り込み
-            all_tags = self.get_all_available_tags()
+            # all_tags は setup 時に Completer 側へキャッシュ済み（毎回 DB を叩かない）
             existing_tags = self.get_existing_tags(text, cursor_position)
-            
-            # print(f"[デバッグ] all_tags数: {len(all_tags)}, existing_tags: {existing_tags}")
-            
-            # カスタムCompleterにデータを設定
+
             if hasattr(self, 'tags_completer') and self.tags_completer:
-                self.tags_completer.set_tags_data(all_tags, existing_tags, current_tag)
-                # print(f"[デバッグ] Completerモデル更新後: {self.tags_completer.model().stringList()[:5]}")
-                
-                # ポップアップを表示
+                self.tags_completer.set_tags_data(existing_tags, current_tag)
+
                 if self.tags_completer.model().rowCount() > 0:
-                    # Completerを再度アクティブにする
                     self.tags_completer.complete()
-                    # print(f"[デバッグ] Completerのポップアップを表示")
             
         except Exception as e:
             print(f"[デバッグ] update_tags_completion エラー: {e}")
@@ -3237,14 +3241,15 @@ class MappingRulesDialog(QDialog):
         
         # ルールを追加
         self.analyzer.add_mapping_rule(keyword, tags)
-        
+
         # 入力をクリア
         self.keyword_input.clear()
         self.tags_input.clear()
-        
-        # テーブルを更新
+
+        # テーブル更新 + オートコンプリート用タグキャッシュも更新
         self.load_rules()
-        
+        self._refresh_completion_caches()
+
         QMessageBox.information(self, "追加完了", f"ルール '{keyword}' → {tags} を追加しました。")
     
     def remove_rule(self, keyword):
@@ -3258,7 +3263,18 @@ class MappingRulesDialog(QDialog):
         if reply == QMessageBox.Yes:
             self.analyzer.remove_mapping_rule(keyword)
             self.load_rules()
+            self._refresh_completion_caches()
             QMessageBox.information(self, "削除完了", f"ルール '{keyword}' を削除しました。")
+
+    def _refresh_completion_caches(self):
+        """ルール追加/削除/リセット後にオートコンプリートのタグキャッシュを更新する。"""
+        try:
+            if hasattr(self, 'tags_completer') and self.tags_completer is not None:
+                fresh = self.get_all_available_tags()
+                self._cached_all_tags = fresh
+                self.tags_completer.set_all_tags(fresh)
+        except Exception as e:
+            print(f"[警告] _refresh_completion_caches: {e}")
     
     def reset_to_defaults(self):
         """カスタムルールをすべてクリアしてデフォルトに戻す"""
@@ -3271,6 +3287,7 @@ class MappingRulesDialog(QDialog):
         if reply == QMessageBox.Yes:
             self.analyzer.save_mapping_rules({})  # カスタムルールをクリア
             self.load_rules()
+            self._refresh_completion_caches()
             QMessageBox.information(self, "リセット完了", "デフォルトルールに戻しました。")
 
 
