@@ -1954,13 +1954,14 @@ class AutoTagDialog(QDialog):
         # 説明
         desc_label = QLabel(f"選択された {len(self.image_paths)} 枚の画像のプロンプトを解析してタグを自動生成します")
         desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setStyleSheet("color: #666666; margin: 10px;")
+        desc_label.setObjectName("DescLabel")
+        desc_label.setStyleSheet("QLabel#DescLabel { margin: 10px; }")
         layout.addWidget(desc_label)
-        
+
         # 注意事項
         warning_label = QLabel("自動タグ適用時に「追加モード」または「置換モード」を選択できます")
         warning_label.setAlignment(Qt.AlignCenter)
-        warning_label.setStyleSheet("color: #0066cc; margin: 5px; font-weight: bold; background-color: #e3f2fd; padding: 8px; border-radius: 4px;")
+        warning_label.setObjectName("InfoBanner")
         layout.addWidget(warning_label)
         
         # 進捗セクション
@@ -2003,86 +2004,26 @@ class AutoTagDialog(QDialog):
         button_layout = QHBoxLayout()
         
         self.start_button = QPushButton("🔍 解析開始")
+        self.start_button.setObjectName("SuccessButton")
         self.start_button.clicked.connect(self.start_analysis)
-        self.start_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                border: none;
-                color: white;
-                padding: 10px 20px;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-        
+
         self.cancel_button = QPushButton("❌ キャンセル")
         self.cancel_button.clicked.connect(self.cancel_analysis)
         self.cancel_button.setEnabled(False)
-        
+
         self.apply_button = QPushButton("✅ 選択したタグを適用")
+        self.apply_button.setObjectName("PrimaryButton")
         self.apply_button.clicked.connect(self.apply_tags)
         self.apply_button.setEnabled(False)
-        self.apply_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                border: none;
-                color: white;
-                padding: 10px 20px;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-        
+
         self.close_button = QPushButton("閉じる")
         self.close_button.clicked.connect(self.close)
-        
+
         self.settings_button = QPushButton("⚙️ 除外設定")
         self.settings_button.clicked.connect(self.show_exclude_settings)
-        self.settings_button.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9800;
-                border: none;
-                color: white;
-                padding: 10px 20px;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #F57C00;
-            }
-        """)
-        
+
         self.rules_button = QPushButton("🔧 ルール設定")
         self.rules_button.clicked.connect(self.show_mapping_rules)
-        self.rules_button.setStyleSheet("""
-            QPushButton {
-                background-color: #9C27B0;
-                border: none;
-                color: white;
-                padding: 10px 20px;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #7B1FA2;
-            }
-        """)
         
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.cancel_button)
