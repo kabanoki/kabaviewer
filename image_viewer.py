@@ -1,7 +1,9 @@
 # back
 import os
+import json
 import queue
 import random
+import tempfile
 import zipfile
 import shutil
 import datetime
@@ -3700,6 +3702,18 @@ class ImageViewer(QMainWindow):
             migrate_paths_action.triggered.connect(self.show_migrate_paths_dialog)
             maintenance_menu.addAction(migrate_paths_action)
 
+            maintenance_menu.addSeparator()
+
+            backup_action = QAction('💾 バックアップを作成…', self)
+            backup_action.setToolTip('タグDB と設定（登録リスト/履歴 等）を 1 つの ZIP に書き出す')
+            backup_action.triggered.connect(self.create_data_backup)
+            maintenance_menu.addAction(backup_action)
+
+            restore_action = QAction('🔄 バックアップから復元…', self)
+            restore_action.setToolTip('バックアップ ZIP からタグDB と設定を復元する（要再起動）')
+            restore_action.triggered.connect(self.restore_data_backup)
+            maintenance_menu.addAction(restore_action)
+
         # [ヘルプ]メニュー
         help_menu = menubar.addMenu('ヘルプ')
         about_action = QAction('バージョン情報', self)
@@ -4504,6 +4518,185 @@ class ImageViewer(QMainWindow):
         else:
             QMessageBox.warning(self, "追加なし", "有効な画像が見つかりませんでした。")
     
+    # ------------------------------------------------------------------
+    # データバックアップ / 復元
+    # ------------------------------------------------------------------
+
+    _BACKUP_DB_NAME = "tags.db"
+    _BACKUP_SETTINGS_NAME = "settings.json"
+    _BACKUP_MANIFEST_NAME = "manifest.json"
+
+    def _flush_writers_for_maintenance(self):
+        """メンテナンス（バックアップ/復元）前にワーカーを停止する。"""
+        for attr in ('_favorite_writer', '_tag_writer'):
+            worker = getattr(self, attr, None)
+            if worker is not None and worker.isRunning():
+                # キューに残った書き込みを実行してから停止
+                while worker.pending_count() > 0:
+                    QApplication.processEvents()
+                    worker.wait(50)
+                worker.stop()
+                worker.wait()
+
+    def _dump_settings_to_dict(self):
+        """QSettings から復元可能な dict を作る。"""
+        settings = self.settings
+        try:
+            settings.sync()
+        except Exception:
+            pass
+        result = {}
+        for key in settings.allKeys():
+            # QSettings.value は型ヒントを与えないと Python 側の素朴な型に
+            # 変換されるので、そのまま JSON シリアライズ可能なものを保存する
+            try:
+                value = settings.value(key)
+            except Exception:
+                continue
+            try:
+                json.dumps(value, ensure_ascii=False)  # シリアライズ確認
+                result[key] = value
+            except (TypeError, ValueError):
+                # JSON で表現できないオブジェクトはスキップ（QByteArray 等）
+                continue
+        return result
+
+    def _restore_settings_from_dict(self, data):
+        """dict から QSettings を復元する（既存値は上書き、JSONに無いキーは保持）。"""
+        if not isinstance(data, dict):
+            return
+        settings = self.settings
+        for key, value in data.items():
+            try:
+                settings.setValue(key, value)
+            except Exception as e:
+                print(f"[restore] settings 復元失敗 {key}: {e}")
+        try:
+            settings.sync()
+        except Exception:
+            pass
+
+    def create_data_backup(self):
+        """タグDB + QSettings をまとめた ZIP バックアップを作成する。"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+
+        default_name = f"kabaviewer_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "バックアップの保存先",
+            os.path.join(os.path.expanduser("~/Desktop"), default_name),
+            "ZIP files (*.zip)"
+        )
+        if not save_path:
+            return
+
+        # 拡張子を保証
+        if not save_path.lower().endswith(".zip"):
+            save_path += ".zip"
+
+        try:
+            # 書き込み中のものを flush（ワーカー一時停止）
+            self._flush_writers_for_maintenance()
+
+            db_path = self.tag_manager.db_path
+            settings_data = self._dump_settings_to_dict()
+            manifest = {
+                "app": __app_name__,
+                "version": __version__,
+                "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "db_size": os.path.getsize(db_path) if os.path.exists(db_path) else 0,
+                "settings_keys": len(settings_data),
+            }
+
+            with zipfile.ZipFile(save_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                if os.path.exists(db_path):
+                    zf.write(db_path, arcname=self._BACKUP_DB_NAME)
+                zf.writestr(self._BACKUP_SETTINGS_NAME, json.dumps(settings_data, ensure_ascii=False, indent=2))
+                zf.writestr(self._BACKUP_MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
+
+            QMessageBox.information(
+                self, "完了",
+                f"バックアップを作成しました:\n{save_path}\n\n"
+                f"DB サイズ: {manifest['db_size']:,} bytes\n"
+                f"設定キー数: {manifest['settings_keys']}\n\n"
+                "※ アプリは再起動して使い続けてください。"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"バックアップ作成に失敗しました:\n{e}")
+            print(f"[create_data_backup] error: {e}")
+
+    def restore_data_backup(self):
+        """バックアップ ZIP からタグDB + QSettings を復元する。"""
+        if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
+            QMessageBox.warning(self, "エラー", "タグシステムが利用できません。")
+            return
+
+        zip_path, _ = QFileDialog.getOpenFileName(
+            self, "復元するバックアップ ZIP を選択",
+            os.path.expanduser("~/Desktop"),
+            "ZIP files (*.zip)"
+        )
+        if not zip_path:
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "バックアップから復元",
+            f"以下のバックアップから復元します:\n{zip_path}\n\n"
+            "現在のタグ DB と設定は上書きされます（直前のものは自動でバックアップを取ります）。\n"
+            "復元後はアプリの再起動が必要です。続行しますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            # 書き込み系ワーカーを停止
+            self._flush_writers_for_maintenance()
+
+            db_path = self.tag_manager.db_path
+
+            with tempfile.TemporaryDirectory() as tmp:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    names = set(zf.namelist())
+                    if self._BACKUP_MANIFEST_NAME not in names:
+                        QMessageBox.critical(self, "エラー", "manifest.json が見つかりません。kabaviewer 形式のバックアップではない可能性があります。")
+                        return
+                    zf.extractall(tmp)
+
+                # マニフェストを読んで簡易チェック
+                with open(os.path.join(tmp, self._BACKUP_MANIFEST_NAME), "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                print(f"[restore] manifest: {manifest}")
+
+                # DB を復元（既存は .pre_restore で退避）
+                src_db = os.path.join(tmp, self._BACKUP_DB_NAME)
+                if os.path.exists(src_db):
+                    if os.path.exists(db_path):
+                        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        pre_path = f"{db_path}.pre_restore.{ts}"
+                        shutil.copy2(db_path, pre_path)
+                    shutil.copy2(src_db, db_path)
+
+                # 設定を復元
+                src_settings = os.path.join(tmp, self._BACKUP_SETTINGS_NAME)
+                if os.path.exists(src_settings):
+                    with open(src_settings, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    self._restore_settings_from_dict(data)
+
+            QMessageBox.information(
+                self, "復元完了",
+                "バックアップから復元しました。\n"
+                "変更を完全に反映するためにアプリを再起動してください。"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"復元に失敗しました:\n{e}")
+            print(f"[restore_data_backup] error: {e}")
+
     def show_migrate_paths_dialog(self):
         """ファイルパスの一括置換ダイアログを表示"""
         if not (TAG_SYSTEM_AVAILABLE and self.tag_manager):
