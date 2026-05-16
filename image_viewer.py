@@ -4551,17 +4551,36 @@ class ImageViewer(QMainWindow):
         # 外部 SSD なら数倍速）。EXIF 書き込みは未だ起動しないので
         # 競合なしで読み込み専有できる。
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        from parse_cache import ParseCache
 
         pending_submissions = []  # [(items, results, list_name), ...]
-        # 並列度（CPU コア x 1〜2、上限 6）
         max_workers = max(2, min(6, (os.cpu_count() or 4)))
 
+        # パースキャッシュ（前回と mtime/size が一致したらスキップ）
+        try:
+            parse_cache = ParseCache()
+        except Exception as e:
+            print(f"[ParseCache 初期化失敗] {e}")
+            parse_cache = None
+
+        # 書き戻し用に集めるバッファ
+        cache_writes = []
+        cache_writes_lock = __import__("threading").Lock()
+
         def _parse_one(image_path):
+            # キャッシュヒットなら decode/解析を完全スキップ
+            if parse_cache is not None:
+                cached = parse_cache.get(image_path)
+                if cached is not None:
+                    return image_path, cached
             try:
                 metadata = self.get_exif_data(image_path)
                 prompt_data = analyzer._parse_ai_metadata(metadata)
-                suggested_tags = analyzer.analyze_prompt_data(prompt_data)
-                return image_path, sorted(list(suggested_tags))
+                suggested_tags = sorted(list(analyzer.analyze_prompt_data(prompt_data)))
+                if parse_cache is not None:
+                    with cache_writes_lock:
+                        cache_writes.append((image_path, suggested_tags))
+                return image_path, suggested_tags
             except Exception as e:
                 print(f"解析エラー ({image_path}): {e}")
                 return image_path, []
@@ -4620,6 +4639,13 @@ class ImageViewer(QMainWindow):
 
         progress.setValue(total_images)
         progress.close()
+
+        # パースキャッシュをまとめて書き込み（1 トランザクション）
+        if parse_cache is not None and cache_writes:
+            try:
+                parse_cache.set_many(cache_writes)
+            except Exception as e:
+                print(f"[ParseCache.set_many] {e}")
 
         # ── フェーズ2: 解析完了後にまとめてキューへ投入 ──
         # ここで初めて TagApplyWorker が動き出す。以降は背後で
