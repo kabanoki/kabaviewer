@@ -28,10 +28,11 @@ except ImportError as e:
     TAG_SYSTEM_AVAILABLE = False
 
 class FavoriteWriteWorker(QThread):
-    """EXIF/QSettings へのお気に入り書き込みをバックグラウンドで直列実行するワーカー。
+    """SQLite/EXIF へのお気に入り書き込みをバックグラウンドで直列実行するワーカー。
 
     キューに (file_path, is_favorite) を積み、run() ループで 1 件ずつ処理する。
-    失敗しても SQLite/UI はそのまま維持し、write_failed シグナルでメインスレッドへログ通知のみ行う。
+    QSettings はメインスレッド側で先に書き込まれている前提（thread-safety 観点）。
+    失敗しても UI キャッシュはそのまま維持し、write_failed シグナルでメインスレッドへログ通知のみ行う。
     """
 
     write_failed = pyqtSignal(str, str)  # file_path, error_message
@@ -78,7 +79,8 @@ class FavoriteWriteWorker(QThread):
                 break
             file_path, is_favorite = item
             try:
-                self._tag_manager._write_favorite_side_effects(file_path, is_favorite)
+                # SQLite (軽量 UPDATE 優先 / 必要なら INSERT) + EXIF 書き込み
+                self._tag_manager.write_favorite_persistence(file_path, is_favorite)
             except Exception as e:
                 self.write_failed.emit(file_path, str(e))
             finally:
@@ -3703,34 +3705,41 @@ class ImageViewer(QMainWindow):
             return
         
         try:
-            # SQLite のみ即時トグル（EXIF/QSettings はバックグラウンドへ）
-            ok, is_favorite = self.tag_manager.toggle_favorite(image_path)
-            if ok:
-                # キャッシュ即更新
-                self._favorite_cache[image_path] = is_favorite
+            # ── 即時化のため、永続化(SQLite + EXIF) は全てワーカーに委ねる ──
+            # 新しい状態は UI キャッシュを反転して算出（フォルダ読込時に
+            # tag_manager.get_favorite_map() で全画像分を bulk 取得済み）。
+            current = bool(self._favorite_cache.get(image_path, False))
+            new_state = not current
 
-                # ハートボタンの状態を即更新
-                if hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
-                    self.update_favorite_heart_button(is_favorite)
+            # キャッシュ即更新（UI の真実）
+            self._favorite_cache[image_path] = new_state
 
-                # Pillow デコードなしでハートオーバーレイだけ更新
-                self._refresh_favorite_overlay_only()
+            # ハートボタンの状態を即更新
+            if hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
+                self.update_favorite_heart_button(new_state)
 
-                # お気に入り後はグリッドの選択状態を解除（スライドで対象が
-                # ズレた状態のまま再度トグルしてしまう事故を防ぐ）
-                self._clear_grid_selection()
+            # Pillow デコードなしでハートオーバーレイだけ更新
+            self._refresh_favorite_overlay_only()
 
-                # 状態を表示
-                status = "お気に入りに追加" if is_favorite else "お気に入りから削除"
-                file_name = os.path.basename(image_path)
-                self.show_message(f"✨ 「{file_name}」を{status}しました")
+            # お気に入り後はグリッドの選択状態を解除（スライドで対象が
+            # ズレた状態のまま再度トグルしてしまう事故を防ぐ）
+            self._clear_grid_selection()
 
-                # EXIF/QSettings の書き込みはワーカーに委ねる
-                if self._favorite_writer is not None:
-                    self._favorite_writer.enqueue(image_path, is_favorite)
-            else:
-                QMessageBox.warning(self, "エラー", "お気に入り状態の更新に失敗しました。")
-                
+            # QSettings は thread-safety の観点でメインスレッドから書き込む（軽量）
+            try:
+                self.tag_manager._save_favorite_to_qsettings(image_path, new_state)
+            except Exception as e:
+                print(f"QSettings favorite write failed: {e}")
+
+            # 状態を表示
+            status = "お気に入りに追加" if new_state else "お気に入りから削除"
+            file_name = os.path.basename(image_path)
+            self.show_message(f"✨ 「{file_name}」を{status}しました")
+
+            # SQLite + EXIF の永続化はワーカーに委ねる（メインスレッドは即返る）
+            if self._favorite_writer is not None:
+                self._favorite_writer.enqueue(image_path, new_state)
+
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"お気に入り更新エラー: {str(e)}")
     

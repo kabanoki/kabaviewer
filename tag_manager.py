@@ -622,6 +622,38 @@ class TagManager:
         """
         self._save_favorite_to_exif(file_path, is_favorite)
 
+    def write_favorite_persistence(self, file_path, is_favorite):
+        """SQLite と EXIF にお気に入り状態を反映する（ワーカースレッド用）。
+
+        既存レコードがあれば SQLite UPDATE のみで済ませる軽量パス。
+        無ければ hash + tags + INSERT のフルパスにフォールバック。
+        QSettings はメインスレッド側で先に更新済みである前提（thread-safe 観点）。
+        """
+        # 1) SQLite: まず軽量 UPDATE を試す
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE image_tags SET is_favorite=?, updated_at=CURRENT_TIMESTAMP WHERE file_path=?',
+            (int(bool(is_favorite)), file_path)
+        )
+        rowcount = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        if rowcount == 0:
+            # 既存レコード無し: フルパスで INSERT（hash 計算 + tags 取得を含む）
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found: {file_path}")
+            file_hash = self.calculate_file_hash(file_path)
+            if file_hash:
+                existing_tags = self.get_tags(file_path)
+                self._save_to_database(file_path, file_hash, existing_tags, is_favorite)
+
+        self._notify_favorite_changed(file_path, bool(is_favorite))
+
+        # 2) EXIF: 一番重いので最後（失敗してもメインの状態は崩れない）
+        self._save_favorite_to_exif(file_path, is_favorite)
+
     def set_favorite_status(self, file_path, is_favorite):
         """画像のお気に入り状態を設定（SQLite + QSettings + EXIF の完全版・同期）"""
         if not self.set_favorite_status_fast(file_path, is_favorite):
