@@ -62,6 +62,10 @@ class MultiTagCompleter(QCompleter):
         filtered_tags = self.filter_tags()
         self._model.setStringList(filtered_tags)
 
+    def clear_model(self):
+        """候補を空にする（モデル自体は使い回す）。"""
+        self._model.setStringList([])
+
     def setLineEdit(self, line_edit):
         """LineEditを設定"""
         self.line_edit = line_edit
@@ -902,7 +906,7 @@ class TagTab(QWidget):
         """グループ行の右クリックメニュー"""
         menu = QMenu(self)
         if group_name != UNCLASSIFIED_GROUP:
-            menu.addAction(f"✏️ グループ名を変更…", lambda: self._rename_group_dialog(group_name))
+            menu.addAction(f"📝 グループ名を変更…", lambda: self._rename_group_dialog(group_name))
             menu.addAction(f"🗑️ グループを削除（タグは未分類へ）", lambda: self._delete_group_dialog(group_name))
             menu.addSeparator()
         menu.addAction("➕ 新しいグループを作成…", self._add_group_dialog)
@@ -1964,7 +1968,7 @@ class AutoTagDialog(QDialog):
         self.close_button = QPushButton("閉じる")
         self.close_button.clicked.connect(self.close)
 
-        self.settings_button = QPushButton("⚙️ 除外設定")
+        self.settings_button = QPushButton("🚫 除外設定")
         self.settings_button.clicked.connect(self.show_exclude_settings)
 
         self.rules_button = QPushButton("🔧 ルール設定")
@@ -3059,10 +3063,14 @@ class MappingRulesDialog(QDialog):
             # print(f"[デバッグ] update_tags_completion: text='{text}', cursor={cursor_position}, current_tag='{current_tag}'")
             
             if not current_tag:
-                # print("[デバッグ] current_tagが空のため、候補をクリア")
+                # current_tag が空 → 候補をクリア
+                # 重要: setModel で新しい QStringListModel を被せると Completer の
+                # 内部モデルが差し替わり、その後 set_tags_data の
+                # self._model.setStringList(...) が無効になってしまう。
+                # カンマ区切り入力で 2 件目以降のオートコンプリートが
+                # 機能しなくなる原因。使い回しモデルを clear するだけにする。
                 if hasattr(self, 'tags_completer') and self.tags_completer:
-                    model = QStringListModel([])
-                    self.tags_completer.setModel(model)
+                    self.tags_completer.clear_model()
                 return
             
             # 既存のタグを除外して候補を絞り込み
