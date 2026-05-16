@@ -466,69 +466,102 @@ class TagManager:
             print(f"Hash calculation failed for {file_path}: {e}")
             return None
     
-    def add_tags(self, file_path, tags, write_to_file=True):
+    def _update_tags_in_db(self, file_path, tags):
+        """既存レコードのタグ列だけを軽量 UPDATE する。
+
+        既存レコード無しなら 0 を返すので、呼び出し側で重いフルパス
+        (calculate_file_hash + INSERT) にフォールバックすること。
         """
-        画像にタグを追加
-        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE image_tags SET tags=?, updated_at=CURRENT_TIMESTAMP WHERE file_path=?',
+            (json.dumps(tags, ensure_ascii=False), file_path)
+        )
+        rowcount = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return rowcount
+
+    def _persist_tags_db(self, file_path, tags):
+        """SQLite にタグを保存する。既存レコードがあれば UPDATE、無ければ INSERT。
+
+        EXIF 書き込みは含まない（呼び出し側で別途・必要なら非同期で行う）。
+        """
+        if self._update_tags_in_db(file_path, tags) == 0:
+            # フォールバック: 新規レコードなので hash 計算 + INSERT が必要
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found: {file_path}")
+            file_hash = self.calculate_file_hash(file_path)
+            if not file_hash:
+                return False
+            self._save_to_database(file_path, file_hash, tags)
+        return True
+
+    def add_tags(self, file_path, tags, write_to_file=True):
+        """画像にタグを追加（既存タグとマージ）。
+
         Args:
-            file_path (str): 画像ファイルのパス
-            tags (list): 追加するタグのリスト
-            write_to_file (bool): EXIFにも書き込むかどうか
+            file_path: 画像ファイルのパス
+            tags: 追加するタグのリスト
+            write_to_file: True なら EXIF にも同期書き込み（旧挙動互換）。
+                False の場合 EXIF は書かないので、必要であれば呼び出し側で
+                非同期キューに enqueue すること。
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        
-        file_hash = self.calculate_file_hash(file_path)
-        if not file_hash:
-            return False
-        
-        # 既存タグを取得
+
+        # 既存タグとマージ（重複除去・ソート）
         existing_tags = self.get_tags(file_path)
-        
-        # 新しいタグを追加（重複除去）
-        all_tags = list(set(existing_tags + tags))
-        all_tags.sort()  # ソートして一貫性を保つ
-        
-        # SQLiteに保存
-        self._save_to_database(file_path, file_hash, all_tags)
-        
-        # EXIFに埋め込み（オプション）
+        all_tags = sorted(set(existing_tags + list(tags)))
+
+        # SQLite (軽量 UPDATE 優先 / 必要なら INSERT)
+        if not self._persist_tags_db(file_path, all_tags):
+            return False
+
+        # EXIF (オプション)
         if write_to_file:
             self._save_to_exif(file_path, all_tags)
-        
-        # QSettingsにバックアップ
+
+        # QSettingsバックアップ
         self._save_to_qsettings_backup(file_path, all_tags)
-        
+
         return True
-    
-    def save_tags(self, file_path, tags):
-        """
-        画像のタグを完全に置き換える（上書き保存）
-        
+
+    def save_tags(self, file_path, tags, write_to_file=True):
+        """画像のタグを完全に置き換える。
+
         Args:
-            file_path (str): 画像ファイルのパス
-            tags (list): 保存するタグのリスト（既存タグを完全に置き換え）
+            file_path: 画像ファイルのパス
+            tags: 保存するタグのリスト（既存タグを完全に置き換え）
+            write_to_file: True なら EXIF にも同期書き込み（旧挙動互換）。
+                False の場合 EXIF は書かないので、必要であれば呼び出し側で
+                非同期キューに enqueue すること。
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        
-        file_hash = self.calculate_file_hash(file_path)
-        if not file_hash:
+
+        clean_tags = sorted(set(tags)) if tags else []
+
+        # SQLite (軽量 UPDATE 優先 / 必要なら INSERT)
+        if not self._persist_tags_db(file_path, clean_tags):
             return False
-        
-        # タグリストを整理（重複除去・ソート）
-        clean_tags = sorted(list(set(tags))) if tags else []
-        
-        # SQLiteに保存（上書き）
-        self._save_to_database(file_path, file_hash, clean_tags)
-        
-        # EXIFに埋め込み（上書き）
-        self._save_to_exif(file_path, clean_tags)
-        
-        # QSettingsにバックアップ（上書き）
+
+        # EXIF (オプション)
+        if write_to_file:
+            self._save_to_exif(file_path, clean_tags)
+
+        # QSettingsバックアップ
         self._save_to_qsettings_backup(file_path, clean_tags)
-        
+
         return True
+
+    def write_tags_to_exif_only(self, file_path, tags):
+        """EXIF のみ書き込む（バックグラウンドワーカー用）。
+
+        SQLite と QSettings はメインスレッドで先に書き込まれている前提。
+        """
+        self._save_to_exif(file_path, tags)
     
     def remove_tags(self, file_path, tags):
         """画像からタグを削除"""
@@ -1050,29 +1083,32 @@ class TagManager:
         return []
     
     def _save_to_exif(self, file_path, tags):
-        """EXIFにタグを埋め込み"""
+        """EXIFにタグを埋め込み。
+
+        画像本体を再エンコードせず、piexif.insert で EXIF セグメントだけを
+        書き換える（_save_favorite_to_exif と同じ方式）。
+        以前は Image.open + img.save で JPEG をデコード→再エンコードしており、
+        1枚あたり1〜数秒かかっていた。
+        """
         try:
             # JPEGファイルのみ対応
             if not file_path.lower().endswith(('.jpg', '.jpeg')):
                 return
-            
+
             # 既存のEXIFデータを読み取り
             try:
                 exif_dict = piexif.load(file_path)
-            except:
+            except Exception:
                 exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
-            
+
             # Keywords フィールドにタグを設定
             keywords = ', '.join(tags).encode('utf-8')
             exif_dict["0th"][piexif.ImageIFD.XPKeywords] = keywords
-            
-            # EXIFデータをバイナリに変換
+
+            # 画像本体に手を加えず EXIF だけを差し替える
             exif_bytes = piexif.dump(exif_dict)
-            
-            # 画像に書き込み
-            img = Image.open(file_path)
-            img.save(file_path, "JPEG", exif=exif_bytes, quality=95)
-            
+            piexif.insert(exif_bytes, file_path)
+
         except Exception as e:
             print(f"Failed to write EXIF tags to {file_path}: {e}")
     
