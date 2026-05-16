@@ -5,7 +5,7 @@ import random
 import zipfile
 import shutil
 import datetime
-from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView
+from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView, QListWidget, QListWidgetItem, QDialogButtonBox
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal
 from PIL import Image
@@ -142,6 +142,80 @@ class TagWriteWorker(QThread):
                 self.write_failed.emit(file_path, str(e))
             finally:
                 self._dec_pending()
+
+
+class MultiFolderPickerDialog(QDialog):
+    """複数フォルダを段階的に選んで確定するためのミニダイアログ。
+
+    Qt の QFileDialog で複数フォルダ選択を行うには非ネイティブUIにする必要があり、
+    その場合 macOS の Finder サイドバー（外部ストレージ等）が表示されない問題が
+    起きる。本ダイアログは「ネイティブの単一フォルダ選択ダイアログを必要回数
+    呼ぶ」方式で、外部ストレージも通常通り選べる UX を提供する。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("複数フォルダを選択")
+        self.setModal(True)
+        self.resize(520, 360)
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "「➕ フォルダを追加」を押して、必要な数だけフォルダを選んでください。\n"
+            "外部ストレージは追加先ダイアログのサイドバーから選択できます。"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.ExtendedSelection)
+        layout.addWidget(self._list, 1)
+
+        # 追加 / 削除ボタン
+        row = QHBoxLayout()
+        add_btn = QPushButton("➕ フォルダを追加")
+        add_btn.clicked.connect(self._add_folder)
+        remove_btn = QPushButton("✕ 選択を削除")
+        remove_btn.clicked.connect(self._remove_selected)
+        row.addWidget(add_btn)
+        row.addWidget(remove_btn)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # OK / キャンセル
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._ok_button = buttons.button(QDialogButtonBox.Ok)
+        self._ok_button.setEnabled(False)
+
+        # 直前に追加したフォルダの親をデフォルトの起点に使う
+        self._last_dir = ""
+
+    def _add_folder(self):
+        start_dir = self._last_dir or os.path.expanduser("~")
+        # ネイティブ単一フォルダ選択（macOS のサイドバーから外部ストレージも見える）
+        folder = QFileDialog.getExistingDirectory(self, "フォルダを追加", start_dir)
+        if not folder:
+            return
+        # 重複は無視
+        existing = self.get_folders()
+        if folder in existing:
+            return
+        item = QListWidgetItem(folder)
+        self._list.addItem(item)
+        self._last_dir = os.path.dirname(folder) or folder
+        self._ok_button.setEnabled(self._list.count() > 0)
+
+    def _remove_selected(self):
+        for item in self._list.selectedItems():
+            self._list.takeItem(self._list.row(item))
+        self._ok_button.setEnabled(self._list.count() > 0)
+
+    def get_folders(self):
+        return [self._list.item(i).text() for i in range(self._list.count())]
 
 
 class ExifInfoDialog(QDialog):
@@ -3137,24 +3211,15 @@ class ImageViewer(QMainWindow):
 
         履歴・登録リストには保存せず、インスタント的に閲覧する用途。
         list_mode は "filter" となる（load_filtered_images 経由）。
+
+        フォルダ追加にはネイティブの単一選択ダイアログを使うため、
+        macOS の外部ストレージも通常通りサイドバーから選べる。
         """
-        dialog = QFileDialog(self)
-        dialog.setFileMode(QFileDialog.Directory)
-        dialog.setOption(QFileDialog.ShowDirsOnly, True)
-        dialog.setOption(QFileDialog.DontUseNativeDialog, True)  # 複数選択を有効にするため
-
-        # 複数選択を有効化（QFileDialog のネイティブUIだと不可のため非ネイティブ + 内部 view を直接設定）
-        file_view = dialog.findChild(QListView, "listView")
-        if file_view:
-            file_view.setSelectionMode(QListView.MultiSelection)
-        tree_view = dialog.findChild(QTreeView)
-        if tree_view:
-            tree_view.setSelectionMode(QTreeView.MultiSelection)
-
-        if dialog.exec_() != QDialog.Accepted:
+        picker = MultiFolderPickerDialog(self)
+        if picker.exec_() != QDialog.Accepted:
             return
 
-        selected_folders = [p for p in dialog.selectedFiles() if os.path.isdir(p)]
+        selected_folders = [p for p in picker.get_folders() if os.path.isdir(p)]
         if not selected_folders:
             QMessageBox.warning(self, "エラー", "フォルダが選択されていません。")
             return
