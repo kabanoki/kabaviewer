@@ -1590,64 +1590,26 @@ class ImageViewer(QMainWindow):
     def create_metadata_sidebar(self):
         """メタデータ表示用のサイドバーを作成"""
         self.sidebar_widget = QWidget()
-        self.sidebar_widget.setStyleSheet("""
-            QWidget {
-                background-color: #2b2b2b;
-                border-left: 1px solid #555555;
-            }
-        """)
+        self.sidebar_widget.setObjectName("Sidebar")
         self.sidebar_layout = QVBoxLayout(self.sidebar_widget)
         self.sidebar_layout.setContentsMargins(10, 10, 10, 10)
-        
+
         # サイドバータイトル
         sidebar_title = QLabel("画像メタデータ")
-        sidebar_title.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 10px 0px;
-                border-bottom: 1px solid #555555;
-            }
-        """)
+        sidebar_title.setObjectName("SidebarTitle")
         self.sidebar_layout.addWidget(sidebar_title)
-        
+
         # 切り替えボタン群
         button_layout = QHBoxLayout()
-        
+
         self.sidebar_toggle_button = QPushButton("非表示")
         self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
-        self.sidebar_toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #555555;
-                color: white;
-                border: none;
-                padding: 5px 10px;
-                border-radius: 3px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #666666;
-            }
-        """)
         button_layout.addWidget(self.sidebar_toggle_button)
-        
+
         self.copy_all_sidebar_button = QPushButton("📋")
+        self.copy_all_sidebar_button.setObjectName("PrimaryButton")
         self.copy_all_sidebar_button.setToolTip("全体コピー")
         self.copy_all_sidebar_button.clicked.connect(self.copy_all_metadata_sidebar)
-        self.copy_all_sidebar_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                padding: 5px 8px;
-                border-radius: 3px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-        """)
         button_layout.addWidget(self.copy_all_sidebar_button)
         
         # お気に入りハートボタン（タグシステムが利用可能な場合）
@@ -1675,41 +1637,21 @@ class ImageViewer(QMainWindow):
         button_layout.addStretch()
         self.sidebar_layout.addLayout(button_layout)
         
-        # スクロールエリア
+        # スクロールエリア（テーマのスクロールバー設定を使用）
         self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setObjectName("SidebarScroll")
         self.sidebar_scroll.setWidgetResizable(True)
-        self.sidebar_scroll.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                background-color: transparent;
-            }
-            QScrollBar:vertical {
-                background-color: #3c3c3c;
-                width: 12px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #666666;
-                border-radius: 6px;
-                min-height: 20px;
-            }
-        """)
-        
+        self.sidebar_scroll.setFrameShape(QFrame.NoFrame)
+
         # サイドバー用のメタデータコンテナ
         self.sidebar_content_widget = QWidget()
+        self.sidebar_content_widget.setObjectName("SidebarContent")
         self.sidebar_content_layout = QVBoxLayout(self.sidebar_content_widget)
         self.sidebar_content_layout.setContentsMargins(0, 10, 0, 0)
-        
+
         # 初期メッセージ
         self.no_data_label = QLabel("画像が選択されていません")
-        self.no_data_label.setStyleSheet("""
-            QLabel {
-                color: #999999;
-                font-style: italic;
-                text-align: center;
-                padding: 20px;
-            }
-        """)
+        self.no_data_label.setObjectName("SidebarPlaceholder")
         self.no_data_label.setAlignment(Qt.AlignCenter)
         self.sidebar_content_layout.addWidget(self.no_data_label)
         
@@ -2184,92 +2126,69 @@ class ImageViewer(QMainWindow):
     def create_sidebar_section(self, title, content, tags):
         """サイドバー用のセクションを作成"""
         frame = QFrame()
-        frame.setFrameStyle(QFrame.Box)
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 6px;
-                margin: 5px 0px;
-                padding: 8px;
-            }
-        """)
-        
+        frame.setObjectName("MetaCard")
+        frame.setFrameStyle(QFrame.NoFrame)
+
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(8, 8, 8, 8)
-        
+        layout.setContentsMargins(10, 10, 10, 10)
+
         # ヘッダー部分
         header_layout = QHBoxLayout()
-        
+
         title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 13px;
-                font-weight: bold;
-                color: #ffffff;
-                margin-bottom: 5px;
-            }
-        """)
+        title_label.setObjectName("MetaCardTitle")
         header_layout.addWidget(title_label)
-        
-        # タグ表示
+
+        # タグ表示（アクセントの淡いチップ）
         for tag in tags:
             tag_label = QLabel(tag)
-            tag_label.setStyleSheet("""
-                QLabel {
-                    background-color: #4a90e2;
-                    color: white;
-                    padding: 2px 6px;
-                    border-radius: 8px;
-                    font-size: 9px;
-                    margin-left: 5px;
-                }
-            """)
+            tag_label.setObjectName("MetaTagChip")
+            tag_label.setStyleSheet(
+                # QSS は theme.py の対応セレクタで上書き可能だが、現状チップは
+                # オブジェクト名ベースの個別ルールがまだ無いので最低限のスタイルだけ残す
+                "QLabel#MetaTagChip {"
+                "  background: rgba(78, 161, 255, 0.15);"
+                "  color: #4ea1ff;"
+                "  border: 1px solid rgba(78, 161, 255, 0.4);"
+                "  padding: 2px 8px;"
+                "  border-radius: 8px;"
+                "  font-size: 10px;"
+                "  margin-left: 4px;"
+                "}"
+            )
             header_layout.addWidget(tag_label)
-        
+
         header_layout.addStretch()
-        
+
         # コピーボタン
         copy_btn = QPushButton("📋")
+        copy_btn.setObjectName("IconButton")
         copy_btn.setToolTip("コピー")
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #555555;
-                border: none;
-                color: white;
-                padding: 3px 6px;
-                border-radius: 3px;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #666666;
-            }
-        """)
-        
+
         def copy_section_content():
             clipboard = QApplication.clipboard()
             clipboard.setText(content)
             original_text = copy_btn.text()
             copy_btn.setText("✓")
             QTimer.singleShot(800, lambda: copy_btn.setText(original_text))
-        
+
         copy_btn.clicked.connect(copy_section_content)
         header_layout.addWidget(copy_btn)
-        
+
         layout.addLayout(header_layout)
-        
+
         # コンテンツ部分（サイドバー用は常に短縮表示）
         content_text = QTextEdit()
+        content_text.setObjectName("MetaCardBody")
         content_text.setReadOnly(True)
-        content_text.setStyleSheet("""
-            QTextEdit {
-                color: #cccccc;
-                font-size: 11px;
-                background-color: transparent;
-                border: none;
-                padding: 2px;
-            }
-        """)
+        content_text.setStyleSheet(
+            "QTextEdit#MetaCardBody {"
+            "  background: transparent;"
+            "  border: none;"
+            "  font-size: 11px;"
+            "  padding: 2px;"
+            "}"
+        )
         content_text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         content_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
