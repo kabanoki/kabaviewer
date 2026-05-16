@@ -6,6 +6,7 @@ import zipfile
 import shutil
 import datetime
 import collections
+from concurrent.futures import ThreadPoolExecutor
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView, QListWidget, QListWidgetItem, QDialogButtonBox
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal, QUrl
@@ -2511,16 +2512,64 @@ class ImageViewer(QMainWindow):
         else:
             reverse = not is_ascending
             if order_type == 'date_modified':
-                self.images.sort(key=os.path.getmtime, reverse=reverse)
+                self.images.sort(key=self._stat_key_mtime(self.images), reverse=reverse)
             elif order_type == 'date_added':
-                self.images.sort(key=os.path.getctime, reverse=reverse)
+                self.images.sort(key=self._stat_key_ctime(self.images), reverse=reverse)
             elif order_type == 'date_created':
-                self.images.sort(key=os.path.getctime, reverse=reverse)
+                self.images.sort(key=self._stat_key_ctime(self.images), reverse=reverse)
             elif order_type == 'name':
                 self.images.sort(key=lambda x: os.path.basename(x).lower(), reverse=reverse)
 
         self.current_image_index = 0
         self.show_image()
+
+    @staticmethod
+    def _parallel_stat(paths, attr):
+        """各ファイルの stat 値（mtime/ctime 等）を並列取得して dict で返す。
+
+        os.path.getmtime/getctime は内部で stat() を呼ぶため、N 枚で N 回の
+        シリアル stat になり、大量画像で体感的に遅くなる。ThreadPoolExecutor
+        で並列実行することでディスク I/O の待ちを隠す。
+        """
+        results = {}
+        if not paths:
+            return results
+
+        def _stat_one(p):
+            try:
+                st = os.stat(p)
+                return p, getattr(st, attr)
+            except OSError:
+                return p, 0.0
+
+        # スレッド数はあまり大きくしすぎない（macOS の stat はそこそこ並列効率良い）
+        max_workers = min(16, max(4, (os.cpu_count() or 4) * 2))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for p, v in ex.map(_stat_one, paths):
+                results[p] = v
+        return results
+
+    def _stat_key_mtime(self, paths):
+        cache = self._parallel_stat(paths, "st_mtime")
+        return lambda p: cache.get(p, 0.0)
+
+    def _stat_key_ctime(self, paths):
+        cache = self._parallel_stat(paths, "st_ctime")
+        return lambda p: cache.get(p, 0.0)
+
+    @staticmethod
+    def _filter_existing_parallel(paths):
+        """並列に os.path.isfile を実行して存在するパスのみ返す。
+
+        load_filtered_images 等で N 枚分のシリアル stat を回避する。
+        順序は元の paths と同じ順で返す。
+        """
+        if not paths:
+            return []
+        max_workers = min(16, max(4, (os.cpu_count() or 4) * 2))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            results = list(ex.map(os.path.isfile, paths))
+        return [p for p, ok in zip(paths, results) if ok]
 
     def set_sort_order_type(self, sort_type):
         self.sort_order = (sort_type.lower(), True)  # デフォルトは昇順
@@ -2590,8 +2639,8 @@ class ImageViewer(QMainWindow):
     def load_filtered_images(self, image_list, description="フィルタリング結果", filter_query=None):
         """フィルタリングされた画像リストをビューアーに読み込み"""
         try:
-            # 存在する画像ファイルのみをフィルタ
-            self.images = [img_path for img_path in image_list if os.path.exists(img_path)]
+            # 存在する画像ファイルのみをフィルタ（並列で stat して N 回のシリアル I/O を回避）
+            self.images = self._filter_existing_parallel(image_list)
 
             if not self.images:
                 raise ValueError("No valid images in the filtered list.")
