@@ -139,14 +139,21 @@ class HistoryTab(QWidget):
             self.viewer._process_batch_folders(valid_folders)
 
     def load_history(self):
-        folder_history = self.settings.value("folder_history", [])
+        folder_history = self.settings.value("folder_history", []) or []
         # 存在するフォルダのみをフィルタリング
         valid_folders = self.cleanup_invalid_folders(folder_history)
+
+        # 既存ユーザー向け一回限りの移行: 旧フォーマット（古い順）を
+        # 新フォーマット（登録日順の降順 = 最新が先頭）に反転する
+        if not self.settings.value("history_sort_migrated_desc", False, type=bool):
+            valid_folders = list(reversed(valid_folders))
+            self.settings.setValue("history_sort_migrated_desc", True)
+
+        # 表示（最新が一番上）
         self.history_list.addItems(valid_folders)
-        
-        # 無効なフォルダが除外された場合は設定を更新
-        if len(valid_folders) != len(folder_history):
-            self.settings.setValue("folder_history", valid_folders)
+
+        # 移行・無効除外を反映するため保存し直す
+        self.settings.setValue("folder_history", valid_folders)
 
     def cleanup_invalid_folders(self, folder_list):
         """存在しないフォルダを履歴から除外する"""
@@ -170,8 +177,11 @@ class HistoryTab(QWidget):
         return valid_folders
 
     def update_folder_history(self, folder_path):
-        if folder_path not in [self.history_list.item(i).text() for i in range(self.history_list.count())]:
-            self.history_list.addItem(folder_path)
+        """新規フォルダを登録日順の降順で追加する（最新が先頭）。"""
+        existing = [self.history_list.item(i).text() for i in range(self.history_list.count())]
+        if folder_path not in existing:
+            # 先頭に挿入（最新を一番上に）
+            self.history_list.insertItem(0, folder_path)
 
         folder_history = [self.history_list.item(i).text() for i in range(self.history_list.count())]
         self.settings.setValue("folder_history", folder_history)
