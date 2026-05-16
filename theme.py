@@ -352,9 +352,38 @@ QPushButton#DangerButton:hover {{
     background-color: {t.danger_hover};
     border-color: {t.danger_hover};
 }}
+QPushButton#SuccessButton {{
+    background-color: #43a047;
+    color: white;
+    border: 1px solid #43a047;
+}}
+QPushButton#SuccessButton:hover {{
+    background-color: #4caf50;
+    border-color: #4caf50;
+}}
+QPushButton#SuccessButton:pressed {{
+    background-color: #388e3c;
+}}
 QPushButton#IconButton {{
     padding: 4px 8px;
     font-size: 14px;
+}}
+QPushButton#ChipButton {{
+    background-color: {t.surface};
+    color: {t.text};
+    border: 1px solid {t.border};
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+}}
+QPushButton#ChipButton:hover {{
+    background-color: {t.surface_hover};
+    border-color: {t.accent};
+}}
+QLabel#DialogHeading {{
+    background-color: {t.surface_elevated};
+    color: {t.text};
+    border: 1px solid {t.border_subtle};
 }}
 
 /* メタデータカード用フレーム */

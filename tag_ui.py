@@ -463,18 +463,16 @@ class TagEditDialog(QDialog):
     def init_ui(self):
         layout = QVBoxLayout(self)
         
-        # 画像情報表示
+        # 画像情報表示（テーマの MetaCard スタイルを流用）
         info_label = QLabel(f"📁 {os.path.basename(self.image_path)}")
-        info_label.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
-                font-weight: bold;
-                padding: 10px;
-                background-color: #f0f0f0;
-                border-radius: 4px;
-                margin-bottom: 10px;
-            }
-        """)
+        info_label.setObjectName("DialogHeading")
+        info_label.setStyleSheet(
+            "QLabel#DialogHeading {"
+            "  font-size: 14px; font-weight: 600;"
+            "  padding: 10px; border-radius: 6px;"
+            "  margin-bottom: 10px;"
+            "}"
+        )
         layout.addWidget(info_label)
         
         # タグ入力ウィジェット
@@ -510,18 +508,14 @@ class TagEditDialog(QDialog):
         
         for tag in popular_tags:
             btn = QPushButton(tag)
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #e8e8e8;
-                    border: 1px solid #cccccc;
-                    border-radius: 4px;
-                    padding: 4px 8px;
-                    margin: 2px;
-                }
-                QPushButton:hover {
-                    background-color: #d0d0d0;
-                }
-            """)
+            btn.setObjectName("ChipButton")
+            # チップ風の控えめなボタン（theme.py の ChipButton セレクタで上書き可）
+            btn.setStyleSheet(
+                "QPushButton#ChipButton {"
+                "  padding: 4px 10px; margin: 2px; font-size: 12px;"
+                "  border-radius: 12px;"
+                "}"
+            )
             btn.clicked.connect(lambda checked, t=tag: self.add_popular_tag(t))
             
             layout.addWidget(btn, row, col)
@@ -596,20 +590,9 @@ class TagTab(QWidget):
 
         # 「ORグループを追加」ボタン
         add_group_row_btn = QPushButton("➕ ORグループを追加")
+        add_group_row_btn.setObjectName("PrimaryButton")
         add_group_row_btn.setToolTip("AND結合される新しい検索行を追加")
         add_group_row_btn.clicked.connect(self.add_search_group_row)
-        add_group_row_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1976d2;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #1565c0; }
-            QPushButton:pressed { background-color: #0d47a1; }
-        """)
         search_layout.addWidget(add_group_row_btn)
 
         # 初期行を1つ追加
@@ -666,53 +649,22 @@ class TagTab(QWidget):
         tag_header_layout.addStretch()
 
         add_group_btn = QPushButton("➕ グループ")
+        add_group_btn.setObjectName("SuccessButton")
         add_group_btn.setToolTip("新しいグループを作成")
         add_group_btn.setMaximumWidth(90)
-        add_group_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #43a047;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: #2e7d32; }
-        """)
         add_group_btn.clicked.connect(self._add_group_dialog)
         tag_header_layout.addWidget(add_group_btn)
 
         reseed_btn = QPushButton("🔄 自動分類")
         reseed_btn.setToolTip("auto_tag_analyzer のカテゴリを基に未分類タグを自動分類")
         reseed_btn.setMaximumWidth(90)
-        reseed_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #7b1fa2;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: #4a148c; }
-        """)
         reseed_btn.clicked.connect(self._reseed_groups)
         tag_header_layout.addWidget(reseed_btn)
 
         bulk_assign_btn = QPushButton("📦 振り分け")
+        bulk_assign_btn.setObjectName("PrimaryButton")
         bulk_assign_btn.setToolTip("タグを選んで一括でグループに振り分ける")
         bulk_assign_btn.setMaximumWidth(90)
-        bulk_assign_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1565c0;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: #0d47a1; }
-        """)
         bulk_assign_btn.clicked.connect(self._open_bulk_assign_dialog)
         tag_header_layout.addWidget(bulk_assign_btn)
 
@@ -748,24 +700,7 @@ class TagTab(QWidget):
         
         # 「ビューアーで表示」ボタンを追加
         self.view_in_viewer_btn = QPushButton("🖼️ ビューアーで表示")
-        self.view_in_viewer_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4a90e2;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #357abd;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
+        self.view_in_viewer_btn.setObjectName("PrimaryButton")
         self.view_in_viewer_btn.clicked.connect(self.show_results_in_viewer)
         self.view_in_viewer_btn.setEnabled(False)  # 初期状態では無効
         results_header_layout.addWidget(self.view_in_viewer_btn)
@@ -1453,24 +1388,7 @@ class FavoritesTab(QWidget):
         
         # 「ビューアーで表示」ボタンを追加
         self.view_favorites_in_viewer_btn = QPushButton("🖼️ ビューアーで表示")
-        self.view_favorites_in_viewer_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ff8c00;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #ff7700;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
+        self.view_favorites_in_viewer_btn.setObjectName("PrimaryButton")
         self.view_favorites_in_viewer_btn.clicked.connect(self.show_favorites_in_viewer)
         self.view_favorites_in_viewer_btn.setEnabled(False)  # 初期状態では無効
         favorites_header_layout.addWidget(self.view_favorites_in_viewer_btn)
