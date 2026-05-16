@@ -1868,34 +1868,52 @@ class TagApplyWorker(QThread):
                 self.completion_finished.emit(self.applied_count, self.total_tags, elapsed_time, self.failed_count)
                 return
 
-            # ── DB 書き込みフェーズ: 1 トランザクションでまとめて UPDATE/INSERT ──
+            # ── DB 書き込みフェーズ: チャンク単位でトランザクション + 進捗 ──
+            # 1 トランザクションだと進捗が動かないので 100 件ずつ区切る。
+            # 1000 件で 10 transaction 程度なら fsync 回数は十分少なく、
+            # 進捗バーは滑らかに動く。
             if prepared:
-                self.progress_updated.emit(0, f"DB 書き込み中... (0/{len(prepared)})")
-                bulk_items = [(p, t) for (p, _f, t) in prepared]
+                CHUNK = 100
+                total_prepared = len(prepared)
+                self.progress_updated.emit(0, f"DB 書き込み中... (0/{total_prepared})")
+
                 # write_to_file: defer_exif=True ならワーカー側で書くので False
                 # skip_exif_entirely なら DB のみで完全に書かない
                 inline_exif = (not defer_exif) and (not skip_exif_entirely)
-                results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=inline_exif)
-                ok_set = {fp for fp, ok in results if ok}
 
-                for (path, filename, final_tags) in prepared:
-                    if path in ok_set:
-                        with self.progress_lock:
-                            self.applied_count += 1
-                            self.total_tags += len(final_tags)
-                    else:
-                        with self.progress_lock:
-                            self.failed_count += 1
-                            self.failed_items.append(filename)
+                done_so_far = 0
+                for chunk_start in range(0, total_prepared, CHUNK):
+                    if self.is_cancelled:
+                        break
+                    chunk = prepared[chunk_start:chunk_start + CHUNK]
+                    bulk_items = [(p, t) for (p, _f, t) in chunk]
+                    results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=inline_exif)
+                    ok_set = {fp for fp, ok in results if ok}
 
-                # ── EXIF をワーカーキューへ（直列）──
-                if defer_exif and self.tag_writer is not None:
-                    for (path, _f, final_tags) in prepared:
+                    for (path, filename, final_tags) in chunk:
                         if path in ok_set:
-                            try:
-                                self.tag_writer.enqueue(path, final_tags)
-                            except Exception as e:
-                                print(f"[TagApplyWorker] EXIF enqueue 失敗: {e}")
+                            with self.progress_lock:
+                                self.applied_count += 1
+                                self.total_tags += len(final_tags)
+                        else:
+                            with self.progress_lock:
+                                self.failed_count += 1
+                                self.failed_items.append(filename)
+
+                    # チャンクごとに EXIF をワーカーキューへ流す（並行化）
+                    if defer_exif and self.tag_writer is not None:
+                        for (path, _f, final_tags) in chunk:
+                            if path in ok_set:
+                                try:
+                                    self.tag_writer.enqueue(path, final_tags)
+                                except Exception as e:
+                                    print(f"[TagApplyWorker] EXIF enqueue 失敗: {e}")
+
+                    done_so_far += len(chunk)
+                    self.progress_updated.emit(
+                        done_so_far,
+                        f"DB 書き込み中... ({done_so_far}/{total_prepared})"
+                    )
 
             # 進捗の最終更新
             self.progress_updated.emit(
