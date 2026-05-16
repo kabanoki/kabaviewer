@@ -56,9 +56,9 @@ class HistoryTab(QWidget):
         
         # 右側: プレビューエリア
         self.preview_label = QLabel()
+        self.preview_label.setObjectName("PreviewLabel")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(300, 200)
-        self.preview_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
         self.preview_label.setText("フォルダを選択すると\nプレビューが表示されます")
         
         # スプリッターに追加

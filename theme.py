@@ -30,14 +30,15 @@ class DarkTokens:
 
 
 class LightTokens:
+    # サイドバー等が背景と同化しないようコントラストを強めに
     bg = "#ffffff"
-    surface = "#f6f6f8"
-    surface_elevated = "#ffffff"
-    surface_hover = "#eceef2"
-    border = "#d8d8de"
-    border_subtle = "#e8e8ec"
+    surface = "#eef0f5"            # サイドバー/カードのベース（より視認性ある淡い灰）
+    surface_elevated = "#f7f8fb"   # ボタン/ダイアログ
+    surface_hover = "#dde0e7"
+    border = "#c5c7ce"             # 主境界線
+    border_subtle = "#dee0e7"
     text = "#1c1c20"
-    text_muted = "#6a6a72"
+    text_muted = "#5a5d68"
     text_disabled = "#b0b0b8"
     accent = "#1f6feb"
     accent_hover = "#3b85ff"
@@ -416,6 +417,50 @@ QPushButton#HeartButton[favorited="true"] {{
     color: {t.heart};
     border-color: {t.heart};
     font-weight: bold;
+}}
+
+/* === プレビュー / 情報ラベル ============================================= */
+/* 画像プレビュー用のプレースホルダ枠 */
+QLabel#PreviewLabel {{
+    background-color: {t.surface};
+    border: 1px dashed {t.border};
+    border-radius: 8px;
+    color: {t.text_muted};
+    font-size: 13px;
+    padding: 12px;
+}}
+/* 画像が読み込まれた状態（破線→実線、コントラスト上げて画像を引き立てる）*/
+QLabel#PreviewLabel[loaded="true"] {{
+    background-color: {t.surface_elevated};
+    border: 1px solid {t.border};
+    color: {t.text};
+}}
+/* ファイル名・サイズ等の情報表示 */
+QLabel#FileInfoLabel {{
+    background-color: {t.surface_elevated};
+    border: 1px solid {t.border_subtle};
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: {t.text};
+    font-size: 11px;
+}}
+/* 統計値表示（◯件 / ◯枚 等） */
+QLabel#StatsLabel {{
+    color: {t.text_muted};
+    background: transparent;
+    padding: 4px 0;
+}}
+/* 軽い補足テキスト */
+QLabel#MutedHint {{
+    color: {t.text_muted};
+    font-size: 11px;
+    padding-left: 4px;
+}}
+/* タグ入力ウィジェットの「タグを入力してください」プレースホルダ */
+QScrollArea#TagsScroll {{
+    background-color: {t.surface};
+    border: 1px solid {t.border};
+    border-radius: 4px;
 }}
 
 /* × クリアボタン（検索/除外をクリア） */
