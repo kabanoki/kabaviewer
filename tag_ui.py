@@ -627,23 +627,24 @@ class TagTab(QWidget):
         tag_header_layout.addWidget(QLabel("🏷️ タグ一覧（クリック: 検索追加, Ctrl+クリック: 除外追加）"))
         tag_header_layout.addStretch()
 
+        # ツールバーボタン（文字潰れを防ぐため最小幅を指定 + 最大幅制限を撤廃）
         add_group_btn = QPushButton("➕ グループ")
         add_group_btn.setObjectName("SuccessButton")
         add_group_btn.setToolTip("新しいグループを作成")
-        add_group_btn.setMaximumWidth(90)
+        add_group_btn.setMinimumWidth(110)
         add_group_btn.clicked.connect(self._add_group_dialog)
         tag_header_layout.addWidget(add_group_btn)
 
         reseed_btn = QPushButton("🔄 自動分類")
         reseed_btn.setToolTip("auto_tag_analyzer のカテゴリを基に未分類タグを自動分類")
-        reseed_btn.setMaximumWidth(90)
+        reseed_btn.setMinimumWidth(110)
         reseed_btn.clicked.connect(self._reseed_groups)
         tag_header_layout.addWidget(reseed_btn)
 
         bulk_assign_btn = QPushButton("📦 振り分け")
         bulk_assign_btn.setObjectName("PrimaryButton")
         bulk_assign_btn.setToolTip("タグを選んで一括でグループに振り分ける")
-        bulk_assign_btn.setMaximumWidth(90)
+        bulk_assign_btn.setMinimumWidth(110)
         bulk_assign_btn.clicked.connect(self._open_bulk_assign_dialog)
         tag_header_layout.addWidget(bulk_assign_btn)
 
