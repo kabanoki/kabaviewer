@@ -8,8 +8,8 @@ import datetime
 import collections
 from concurrent.futures import ThreadPoolExecutor
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView, QListWidget, QListWidgetItem, QDialogButtonBox
-from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
-from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal, QUrl
+from PyQt5.QtGui import QPixmap, QImage, QImageReader, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
+from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal, QUrl, QSize
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
@@ -149,9 +149,9 @@ class TagWriteWorker(QThread):
 class ImagePrefetcher(QThread):
     """シングル表示用の画像をバックグラウンドでデコード＋リサイズして LRU キャッシュに格納する。
 
-    キーは (image_path, target_w, target_h)、値は (rendered_w, rendered_h, rgba_bytes)。
-    メインスレッドは show_image_single で先にキャッシュを参照し、ヒットすれば
-    Pillow パスをスキップして即 QImage 構築できる。
+    キーは (image_path, target_w, target_h)、値は QImage（KeepAspectRatio で縮小済み）。
+    Qt の QImageReader は libjpeg/libpng を直接叩くため、Pillow → bytes → QImage の
+    余計なコピーが省ける。失敗時は Pillow にフォールバックする。
     """
 
     _SENTINEL = None
@@ -166,6 +166,7 @@ class ImagePrefetcher(QThread):
     # ---------- cache API（メインスレッドから呼ばれる）----------
 
     def get_cached(self, image_path, target_w, target_h):
+        """キャッシュヒット時は QImage を返す。ミスは None。"""
         key = (image_path, target_w, target_h)
         self._cache_lock.lock()
         try:
@@ -176,11 +177,11 @@ class ImagePrefetcher(QThread):
         finally:
             self._cache_lock.unlock()
 
-    def put_cache(self, image_path, target_w, target_h, rendered_w, rendered_h, rgba_bytes):
+    def put_cache(self, image_path, target_w, target_h, qimage):
         key = (image_path, target_w, target_h)
         self._cache_lock.lock()
         try:
-            self._cache[key] = (rendered_w, rendered_h, rgba_bytes)
+            self._cache[key] = qimage
             self._cache.move_to_end(key)
             while len(self._cache) > self._cache_max:
                 self._cache.popitem(last=False)
@@ -203,6 +204,62 @@ class ImagePrefetcher(QThread):
     def stop(self):
         self._queue.put(self._SENTINEL)
 
+    # ---------- decode 本体（メイン・ワーカー共通で使えるよう staticmethod）----------
+
+    @staticmethod
+    def decode_scaled(image_path, target_w, target_h):
+        """QImageReader でアスペクト比保持の縮小 QImage を返す。失敗時は None。
+
+        QImageReader は内部で libjpeg/libpng の DCT スケーリング等を利用する
+        ため、Pillow よりも一般的に高速。
+        """
+        try:
+            reader = QImageReader(image_path)
+            reader.setAutoTransform(True)  # EXIF orientation 反映
+            src_size = reader.size()
+            if not src_size.isValid() or src_size.width() <= 0 or src_size.height() <= 0:
+                return None
+            iw, ih = src_size.width(), src_size.height()
+            image_ratio = iw / ih
+            window_ratio = target_w / target_h
+            if window_ratio > image_ratio:
+                new_h = target_h
+                new_w = max(1, int(target_h * image_ratio))
+            else:
+                new_w = target_w
+                new_h = max(1, int(target_w / image_ratio))
+            reader.setScaledSize(QSize(new_w, new_h))
+            qimage = reader.read()
+            if qimage.isNull():
+                return None
+            # 統一フォーマット（描画時の暗黙変換コストを避ける）
+            if qimage.format() != QImage.Format_RGBA8888:
+                qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
+            return qimage
+        except Exception:
+            return None
+
+    @staticmethod
+    def decode_scaled_with_pillow(image_path, target_w, target_h):
+        """QImageReader が失敗した場合の Pillow フォールバック。"""
+        try:
+            with Image.open(image_path) as img:
+                image_ratio = img.width / img.height
+                window_ratio = target_w / target_h
+                if window_ratio > image_ratio:
+                    new_h = target_h
+                    new_w = max(1, int(target_h * image_ratio))
+                else:
+                    new_w = target_w
+                    new_h = max(1, int(target_w / image_ratio))
+                resized = img.resize((new_w, new_h), Image.LANCZOS)
+                rgba = resized.convert("RGBA")
+                data = rgba.tobytes("raw", "RGBA")
+            qimage = QImage(data, new_w, new_h, QImage.Format_RGBA8888).copy()
+            return qimage
+        except Exception:
+            return None
+
     # ---------- worker loop ----------
 
     def run(self):
@@ -213,23 +270,13 @@ class ImagePrefetcher(QThread):
             image_path, target_w, target_h = item
             if self.get_cached(image_path, target_w, target_h) is not None:
                 continue
-            try:
-                with Image.open(image_path) as img:
-                    image_ratio = img.width / img.height
-                    window_ratio = target_w / target_h
-                    if window_ratio > image_ratio:
-                        new_h = target_h
-                        new_w = max(1, int(target_h * image_ratio))
-                    else:
-                        new_w = target_w
-                        new_h = max(1, int(target_w / image_ratio))
-                    resized = img.resize((new_w, new_h), Image.LANCZOS)
-                    rgba = resized.convert("RGBA")
-                    data = rgba.tobytes("raw", "RGBA")
-                self.put_cache(image_path, target_w, target_h, new_w, new_h, data)
-            except Exception as e:
-                # プリフェッチ失敗は致命的ではないのでログだけ
-                print(f"[ImagePrefetcher] {os.path.basename(image_path)}: {e}")
+            qimage = self.decode_scaled(image_path, target_w, target_h)
+            if qimage is None:
+                qimage = self.decode_scaled_with_pillow(image_path, target_w, target_h)
+            if qimage is None:
+                print(f"[ImagePrefetcher] decode 失敗: {os.path.basename(image_path)}")
+                continue
+            self.put_cache(image_path, target_w, target_h, qimage)
 
 
 class MultiFolderPickerDialog(QDialog):
@@ -2909,28 +2956,20 @@ class ImageViewer(QMainWindow):
         available_width, available_height = self._compute_single_viewport()
 
         try:
-            cached = self._image_prefetcher.get_cached(image_path, available_width, available_height)
-            if cached is not None:
-                new_width, new_height, image_bytes = cached
-            else:
-                with Image.open(image_path) as img:
-                    image_ratio = img.width / img.height
-                    window_ratio = available_width / available_height
-                    if window_ratio > image_ratio:
-                        new_height = available_height
-                        new_width = int(available_height * image_ratio)
-                    else:
-                        new_width = available_width
-                        new_height = int(available_width / image_ratio)
-
-                    image = img.resize((new_width, new_height), Image.LANCZOS)
-                    image_rgba = image.convert("RGBA")
-                    image_bytes = image_rgba.tobytes("raw", "RGBA")
-                # キャッシュに格納（同じサイズで再表示するときに再利用）
+            qimage = self._image_prefetcher.get_cached(image_path, available_width, available_height)
+            if qimage is None:
+                # キャッシュミス: メインスレッドでデコード（QImageReader 優先 / Pillow フォールバック）
+                qimage = ImagePrefetcher.decode_scaled(image_path, available_width, available_height)
+                if qimage is None:
+                    qimage = ImagePrefetcher.decode_scaled_with_pillow(image_path, available_width, available_height)
+                if qimage is None:
+                    raise RuntimeError("画像のデコードに失敗")
                 self._image_prefetcher.put_cache(
-                    image_path, available_width, available_height,
-                    new_width, new_height, image_bytes
+                    image_path, available_width, available_height, qimage
                 )
+
+            new_width = qimage.width()
+            new_height = qimage.height()
 
             # 表示領域サイズの透明なキャンバスを作成し、中央に画像を貼る
             canvas = QPixmap(available_width, available_height)
@@ -2938,7 +2977,6 @@ class ImageViewer(QMainWindow):
             painter = QPainter(canvas)
             image_x = (available_width - new_width) // 2
             image_y = (available_height - new_height) // 2
-            qimage = QImage(image_bytes, new_width, new_height, QImage.Format_RGBA8888).copy()
             image_pixmap = QPixmap.fromImage(qimage)
             painter.drawPixmap(image_x, image_y, image_pixmap)
             painter.end()
