@@ -45,6 +45,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='KabaViewer.app',
-    icon='logo.png',
+    icon='logo.icns',
     bundle_identifier='com.kabaviewer.app',
 )
