@@ -1778,17 +1778,23 @@ class AutoTagWorker(QThread):
 
 
 class TagApplyWorker(QThread):
-    """タグ適用のワーカースレッド"""
+    """タグ適用のワーカースレッド
+
+    EXIF 書き込みは tag_writer (TagWriteWorker) に逃がして直列化することで、
+    複数フォルダの一括処理時にメインスレッドの画像解析(PIL.Image.open)と
+    ディスク I/O が競合しないようにする。
+    """
     progress_updated = pyqtSignal(int, str)  # 進捗, メッセージ
     completion_finished = pyqtSignal(int, int, float, int) # 成功数, タグ総数, 経過時間, 失敗数
     error_occurred = pyqtSignal(str, int, int)  # エラーメッセージ, 成功数, 失敗数
 
-    def __init__(self, items, tag_manager, is_replace_mode, analysis_results):
+    def __init__(self, items, tag_manager, is_replace_mode, analysis_results, tag_writer=None):
         super().__init__()
         self.items = items
         self.tag_manager = tag_manager
         self.is_replace_mode = is_replace_mode
         self.analysis_results = analysis_results
+        self.tag_writer = tag_writer  # None なら同期 EXIF 書き込みフォールバック
         self.is_cancelled = False
         self.applied_count = 0
         self.failed_count = 0
@@ -1802,16 +1808,19 @@ class TagApplyWorker(QThread):
     def run(self):
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        
+
         start_time = time.time()
-        
-        # アイテム数に基づいて並列度を調整
-        if len(self.items) < 5:
+
+        # 並列度: EXIF を別ワーカーへ逃がすため重い書き込みは無くなるが、
+        # SQLite の書き込みロック競合を避けるためにも控えめに 2 並列まで
+        # （EXIF 同期フォールバック時はさらに 1 並列に）
+        defer_exif = self.tag_writer is not None
+        if not defer_exif:
             max_workers = 1
-        elif len(self.items) < 20:
-            max_workers = 2
+        elif len(self.items) < 5:
+            max_workers = 1
         else:
-            max_workers = 4
+            max_workers = 2
 
         def apply_single(item):
             image_path, filename = item
@@ -1820,13 +1829,27 @@ class TagApplyWorker(QThread):
                     tags = self.analysis_results[image_path]
                     if tags:
                         if self.is_replace_mode:
-                            success = self.tag_manager.save_tags(image_path, tags)
+                            # SQLite + QSettings を即時、EXIF はワーカー
+                            success = self.tag_manager.save_tags(
+                                image_path, tags, write_to_file=not defer_exif
+                            )
+                            final_tags = tags
                         else:
                             existing_tags = self.tag_manager.get_tags(image_path)
-                            new_tags = list(set(existing_tags + tags))
-                            success = self.tag_manager.save_tags(image_path, new_tags)
-                        
+                            new_tags = sorted(set(existing_tags + tags))
+                            success = self.tag_manager.save_tags(
+                                image_path, new_tags, write_to_file=not defer_exif
+                            )
+                            final_tags = new_tags
+
                         if success:
+                            # EXIF をワーカーキューへ
+                            if defer_exif and self.tag_writer is not None:
+                                try:
+                                    self.tag_writer.enqueue(image_path, final_tags)
+                                except Exception as e:
+                                    print(f"[TagApplyWorker] EXIF enqueue 失敗 ({filename}): {e}")
+
                             with self.progress_lock:
                                 self.applied_count += 1
                                 self.total_tags += len(tags)
@@ -1847,22 +1870,22 @@ class TagApplyWorker(QThread):
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(apply_single, item): item for item in self.items}
-                
+
                 completed = 0
                 for future in as_completed(futures):
                     if self.is_cancelled:
-                        for f in futures: f.cancel()
+                        for f in futures:
+                            f.cancel()
                         break
-                    
+
                     completed += 1
                     _, filename = futures[future]
                     self.progress_updated.emit(completed, f"適用中... ({completed}/{len(self.items)}) {filename}")
-                    
+
             elapsed_time = time.time() - start_time
             if not self.is_cancelled:
                 self.completion_finished.emit(self.applied_count, self.total_tags, elapsed_time, self.failed_count)
         except Exception as e:
-            # 重大なエラー発生時も部分的な成功情報を報告
             self.error_occurred.emit(str(e), self.applied_count, self.failed_count)
 
 
