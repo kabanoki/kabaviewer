@@ -782,11 +782,21 @@ class TagTab(QWidget):
         return states
 
     def update_tag_visual_states(self):
-        """タグツリーの視覚状態（検索タグ：青、除外タグ：赤）を更新"""
+        """タグツリーの視覚状態を更新。
+
+        検索/除外で選択中のタグは半透明のアクセント/危険色でハイライト。
+        通常状態は QBrush() で「未指定」に戻し、QSS のテーマ色（背景・文字色）
+        が適用されるようにする。これにより、ダークテーマで強制的に白背景に
+        ならず、ライトテーマでも整合する見た目になる。
+        """
+        # 半透明色（QSS の theme.py トークンに合わせている）
+        search_bg = QColor(78, 161, 255, 80)   # accent blue, alpha ~30%
+        exclude_bg = QColor(255, 107, 107, 80)  # danger red, alpha ~30%
+
         root = self.all_tags_tree.invisibleRootItem()
         for i in range(root.childCount()):
             group_item = root.child(i)
-            # グループ行はリセットのみ
+            # グループ行は明示的に色付けしない（テーマ任せ）
             group_item.setBackground(0, QBrush())
             group_item.setForeground(0, QBrush())
             for j in range(group_item.childCount()):
@@ -796,14 +806,14 @@ class TagTab(QWidget):
                     continue
                 tag_name = data[1]
                 if tag_name in self.current_exclude_tags:
-                    tag_item.setBackground(0, QBrush(QColor(255, 205, 210)))
-                    tag_item.setForeground(0, QBrush(QColor(0, 0, 0)))
+                    tag_item.setBackground(0, QBrush(exclude_bg))
                 elif tag_name in self.current_search_tags:
-                    tag_item.setBackground(0, QBrush(QColor(144, 202, 249)))
-                    tag_item.setForeground(0, QBrush(QColor(0, 0, 0)))
+                    tag_item.setBackground(0, QBrush(search_bg))
                 else:
-                    tag_item.setBackground(0, QBrush(QColor(255, 255, 255)))
-                    tag_item.setForeground(0, QBrush(QColor(0, 0, 0)))
+                    # 通常状態: テーマ任せに戻す
+                    tag_item.setBackground(0, QBrush())
+                # 文字色は常にテーマ側へ戻す（明示色を残すとテーマ切替で破綻するため）
+                tag_item.setForeground(0, QBrush())
         self.all_tags_tree.update()
 
     def _on_tree_item_clicked(self, item, _column):
