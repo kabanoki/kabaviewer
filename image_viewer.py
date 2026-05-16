@@ -1911,60 +1911,30 @@ class ImageViewer(QMainWindow):
     def create_sidebar_tags_section(self, tags):
         """サイドバー用のタグセクションを作成"""
         frame = QFrame()
-        frame.setFrameStyle(QFrame.Box)
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 6px;
-                margin: 5px 0px;
-            }
-        """)
-        
+        frame.setObjectName("MetaCard")
+        frame.setFrameStyle(QFrame.NoFrame)
+
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(10, 8, 10, 8)
-        
+
         # タイトル行
         title_layout = QHBoxLayout()
-        
+
         # タイトルラベル
         title_label = QLabel("🏷️ 現在のタグ")
-        title_label.setStyleSheet("""
-            QLabel {
-                color: #4CAF50;
-                font-weight: bold;
-                font-size: 12px;
-            }
-        """)
+        title_label.setObjectName("MetaCardTitle")
         title_layout.addWidget(title_label)
-        
+
         # タグ数表示
         count_label = QLabel(f"({len(tags)}個)")
-        count_label.setStyleSheet("""
-            QLabel {
-                color: #999999;
-                font-size: 10px;
-            }
-        """)
+        count_label.setObjectName("MutedHint")
         title_layout.addWidget(count_label)
-        
+
         title_layout.addStretch()
-        
-        # 全コピーボタン
+
+        # 全コピーボタン（控えめなアイコンボタン）
         copy_all_button = QPushButton("📋")
-        copy_all_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                border: none;
-                color: white;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        copy_all_button.setObjectName("IconButton")
         copy_all_button.setFixedSize(25, 20)
         copy_all_button.clicked.connect(lambda: QApplication.clipboard().setText(", ".join(tags)))
         copy_all_button.setToolTip("全タグをコピー")
@@ -1986,53 +1956,27 @@ class ImageViewer(QMainWindow):
         return frame
     
     def create_tag_chip(self, tag):
-        """個別タグのチップを作成"""
+        """個別タグのチップを作成（アクセントカラー基調の控えめなチップ）"""
         chip_frame = QFrame()
-        chip_frame.setStyleSheet("""
-            QFrame {
-                background-color: #4CAF50;
-                border: 1px solid #45a049;
-                border-radius: 12px;
-            }
-            QFrame:hover {
-                background-color: #45a049;
-            }
-        """)
-        chip_frame.setFixedHeight(36)
-        
+        chip_frame.setObjectName("TagChip")
+        chip_frame.setFixedHeight(26)
+
         # 文字幅に合わせて横幅を調整
         from PyQt5.QtWidgets import QSizePolicy
         chip_frame.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        
+
         chip_layout = QHBoxLayout(chip_frame)
-        chip_layout.setContentsMargins(8, 0, 8, 0)
+        chip_layout.setContentsMargins(8, 0, 6, 0)
         chip_layout.setSpacing(4)
-        
+
         # タグテキスト
         tag_label = QLabel(tag)
-        tag_label.setStyleSheet("""
-            QLabel {
-                color: white;
-                font-size: 10px;
-                font-weight: bold;
-            }
-        """)
+        tag_label.setObjectName("TagChipLabel")
         chip_layout.addWidget(tag_label)
-        
-        # コピーボタン
+
+        # コピーボタン（チップ内の小さなアイコン）
         copy_button = QPushButton("📋")
-        copy_button.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                color: white;
-                font-size: 11px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                color: #cccccc;
-            }
-        """)
+        copy_button.setObjectName("TagChipCopy")
         copy_button.setFixedSize(16, 16)
         copy_button.clicked.connect(lambda: QApplication.clipboard().setText(tag))
         copy_button.setToolTip(f"「{tag}」をコピー")
