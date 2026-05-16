@@ -3067,6 +3067,66 @@ class ImageViewer(QMainWindow):
                 self.combo_box.setCurrentIndex(new_speed_index)
                 self.update_slideshow_speed()
 
+    def select_multiple_folders_instant(self):
+        """複数フォルダを選択して、画像をまとめてビューアーに即時表示する。
+
+        履歴・登録リストには保存せず、インスタント的に閲覧する用途。
+        list_mode は "filter" となる（load_filtered_images 経由）。
+        """
+        dialog = QFileDialog(self)
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)  # 複数選択を有効にするため
+
+        # 複数選択を有効化（QFileDialog のネイティブUIだと不可のため非ネイティブ + 内部 view を直接設定）
+        file_view = dialog.findChild(QListView, "listView")
+        if file_view:
+            file_view.setSelectionMode(QListView.MultiSelection)
+        tree_view = dialog.findChild(QTreeView)
+        if tree_view:
+            tree_view.setSelectionMode(QTreeView.MultiSelection)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        selected_folders = [p for p in dialog.selectedFiles() if os.path.isdir(p)]
+        if not selected_folders:
+            QMessageBox.warning(self, "エラー", "フォルダが選択されていません。")
+            return
+
+        # 各フォルダから画像を集めて 1 つのリストに統合
+        combined = []
+        empty_folders = []
+        for folder in selected_folders:
+            files = self._get_image_files_from_folder(folder)
+            if files:
+                combined.extend(files)
+            else:
+                empty_folders.append(folder)
+
+        if not combined:
+            QMessageBox.warning(self, "エラー", "選択されたフォルダに画像が見つかりませんでした。")
+            return
+
+        # 説明文（ウィンドウタイトルやメッセージ用）
+        if len(selected_folders) == 1:
+            description = f"複数フォルダ表示: {os.path.basename(selected_folders[0])}"
+        else:
+            description = f"複数フォルダ表示: {len(selected_folders)} フォルダ / {len(combined)} 枚"
+
+        try:
+            # filter_query=None で履歴・登録リストには載らない
+            self.load_filtered_images(combined, description=description, filter_query=None)
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"画像の読み込みに失敗しました: {e}")
+            return
+
+        # 一部フォルダが空だった場合は通知だけしておく
+        if empty_folders:
+            names = "\n".join(f"• {os.path.basename(p)}" for p in empty_folders)
+            self.show_message(f"⚠ 画像が無いフォルダをスキップ: {len(empty_folders)} 件", duration=3000)
+            print(f"[select_multiple_folders_instant] 画像のないフォルダ:\n{names}")
+
     def select_folder(self):
         folder_path = QFileDialog.getExistingDirectory(self, "フォルダを選択")
         if folder_path:
@@ -3086,7 +3146,12 @@ class ImageViewer(QMainWindow):
         file_menu = menubar.addMenu('ファイル')
         select_folder_action = file_menu.addAction('フォルダを選択')
         select_folder_action.triggered.connect(self.select_folder)
-        
+
+        # 複数フォルダの一括表示（履歴に残さないインスタント機能）
+        multi_folder_action = file_menu.addAction('📂 複数フォルダを一括表示')
+        multi_folder_action.setToolTip('選択した全フォルダの画像を 1 つのリストにまとめて表示（履歴には残らない）')
+        multi_folder_action.triggered.connect(self.select_multiple_folders_instant)
+
         # 区切り線を追加
         file_menu.addSeparator()
         
