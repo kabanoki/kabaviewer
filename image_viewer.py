@@ -5,6 +5,7 @@ import random
 import zipfile
 import shutil
 import datetime
+import collections
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView, QListWidget, QListWidgetItem, QDialogButtonBox
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal, QUrl
@@ -142,6 +143,92 @@ class TagWriteWorker(QThread):
                 self.write_failed.emit(file_path, str(e))
             finally:
                 self._dec_pending()
+
+
+class ImagePrefetcher(QThread):
+    """シングル表示用の画像をバックグラウンドでデコード＋リサイズして LRU キャッシュに格納する。
+
+    キーは (image_path, target_w, target_h)、値は (rendered_w, rendered_h, rgba_bytes)。
+    メインスレッドは show_image_single で先にキャッシュを参照し、ヒットすれば
+    Pillow パスをスキップして即 QImage 構築できる。
+    """
+
+    _SENTINEL = None
+
+    def __init__(self, parent=None, cache_size=6):
+        super().__init__(parent)
+        self._queue = queue.Queue()
+        self._cache = collections.OrderedDict()
+        self._cache_lock = QMutex()
+        self._cache_max = cache_size
+
+    # ---------- cache API（メインスレッドから呼ばれる）----------
+
+    def get_cached(self, image_path, target_w, target_h):
+        key = (image_path, target_w, target_h)
+        self._cache_lock.lock()
+        try:
+            entry = self._cache.get(key)
+            if entry is not None:
+                self._cache.move_to_end(key)
+            return entry
+        finally:
+            self._cache_lock.unlock()
+
+    def put_cache(self, image_path, target_w, target_h, rendered_w, rendered_h, rgba_bytes):
+        key = (image_path, target_w, target_h)
+        self._cache_lock.lock()
+        try:
+            self._cache[key] = (rendered_w, rendered_h, rgba_bytes)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._cache_max:
+                self._cache.popitem(last=False)
+        finally:
+            self._cache_lock.unlock()
+
+    def clear_cache(self):
+        self._cache_lock.lock()
+        try:
+            self._cache.clear()
+        finally:
+            self._cache_lock.unlock()
+
+    def request(self, image_path, target_w, target_h):
+        """非同期にプリフェッチを要求する（既にキャッシュにあれば worker でスキップ）。"""
+        if not image_path or target_w <= 0 or target_h <= 0:
+            return
+        self._queue.put((image_path, target_w, target_h))
+
+    def stop(self):
+        self._queue.put(self._SENTINEL)
+
+    # ---------- worker loop ----------
+
+    def run(self):
+        while True:
+            item = self._queue.get()
+            if item is self._SENTINEL:
+                break
+            image_path, target_w, target_h = item
+            if self.get_cached(image_path, target_w, target_h) is not None:
+                continue
+            try:
+                with Image.open(image_path) as img:
+                    image_ratio = img.width / img.height
+                    window_ratio = target_w / target_h
+                    if window_ratio > image_ratio:
+                        new_h = target_h
+                        new_w = max(1, int(target_h * image_ratio))
+                    else:
+                        new_w = target_w
+                        new_h = max(1, int(target_w / image_ratio))
+                    resized = img.resize((new_w, new_h), Image.LANCZOS)
+                    rgba = resized.convert("RGBA")
+                    data = rgba.tobytes("raw", "RGBA")
+                self.put_cache(image_path, target_w, target_h, new_w, new_h, data)
+            except Exception as e:
+                # プリフェッチ失敗は致命的ではないのでログだけ
+                print(f"[ImagePrefetcher] {os.path.basename(image_path)}: {e}")
 
 
 class MultiFolderPickerDialog(QDialog):
@@ -1208,6 +1295,10 @@ class ImageViewer(QMainWindow):
             self._tag_writer.start()
         else:
             self._tag_writer = None
+
+        # 画像プリフェッチャ（次/前画像をバックグラウンドでデコードしておく）
+        self._image_prefetcher = ImagePrefetcher(parent=self, cache_size=6)
+        self._image_prefetcher.start()
 
         # オーバーレイ再描画用キャッシュ
         self._last_single_canvas: QPixmap = None
@@ -2463,6 +2554,10 @@ class ImageViewer(QMainWindow):
             self.images = [os.path.join(folder_path, f) for f in all_files
                            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))]
 
+            # プリフェッチキャッシュをクリア（前フォルダの画像は不要）
+            if hasattr(self, '_image_prefetcher') and self._image_prefetcher is not None:
+                self._image_prefetcher.clear_cache()
+
             # print(f"認識された画像ファイル: {self.images}")  # デバッグ用出力
 
             if not self.images:
@@ -2497,10 +2592,14 @@ class ImageViewer(QMainWindow):
         try:
             # 存在する画像ファイルのみをフィルタ
             self.images = [img_path for img_path in image_list if os.path.exists(img_path)]
-            
+
             if not self.images:
                 raise ValueError("No valid images in the filtered list.")
-            
+
+            # プリフェッチキャッシュをクリア（前リストの画像は不要）
+            if hasattr(self, '_image_prefetcher') and self._image_prefetcher is not None:
+                self._image_prefetcher.clear_cache()
+
             self.current_image_index = 0  # 最初の画像から開始
             self._init_favorite_cache()
             self.sort_images()
@@ -2738,32 +2837,36 @@ class ImageViewer(QMainWindow):
         
         return pixmap
 
+    def _compute_single_viewport(self):
+        """シングル表示の available_width / available_height を計算する。"""
+        total_width = self.width()
+        total_height = self.height()
+        sidebar_width = 0
+        if self.sidebar_visible and hasattr(self, 'sidebar_widget'):
+            sidebar_width = self.sidebar_widget.width()
+        available_width = max(400, total_width - sidebar_width - 50)
+        available_height = max(300, total_height - 150)
+        return available_width, available_height
+
     def show_image_single(self):
-        """シングル表示モード（従来の1枚表示）"""
-        if self.images:
-            image_path = self.images[self.current_image_index]
-            try:
+        """シングル表示モード（従来の1枚表示）
+
+        プリフェッチキャッシュにヒットすれば Pillow による decode/resize を
+        スキップしてバイト列から QImage を直接構築する。
+        """
+        if not self.images:
+            return
+        image_path = self.images[self.current_image_index]
+        available_width, available_height = self._compute_single_viewport()
+
+        try:
+            cached = self._image_prefetcher.get_cached(image_path, available_width, available_height)
+            if cached is not None:
+                new_width, new_height, image_bytes = cached
+            else:
                 with Image.open(image_path) as img:
-                    # 実際の利用可能スペースを計算（サイドバーとマージンを考慮）
-                    total_width = self.width()
-                    total_height = self.height()
-                    
-                    # サイドバーが表示されている場合はその分を差し引く
-                    sidebar_width = 0
-                    if self.sidebar_visible and hasattr(self, 'sidebar_widget'):
-                        sidebar_width = self.sidebar_widget.width()
-                    
-                    # 利用可能な画像表示スペース（マージンも考慮）
-                    available_width = total_width - sidebar_width - 50  # 50pxマージン
-                    available_height = total_height - 150  # タブとメニューバー分を差し引く
-                    
-                    # 最小サイズの保証
-                    available_width = max(400, available_width)
-                    available_height = max(300, available_height)
-                    
                     image_ratio = img.width / img.height
                     window_ratio = available_width / available_height
-
                     if window_ratio > image_ratio:
                         new_height = available_height
                         new_width = int(available_height * image_ratio)
@@ -2771,53 +2874,65 @@ class ImageViewer(QMainWindow):
                         new_width = available_width
                         new_height = int(available_width / image_ratio)
 
-                    # 高品質リサイズ
                     image = img.resize((new_width, new_height), Image.LANCZOS)
                     image_rgba = image.convert("RGBA")
-                    
-                    # バイト配列を変数に保持してGCを防ぐ
                     image_bytes = image_rgba.tobytes("raw", "RGBA")
-                    
-                    # 表示領域サイズの透明なキャンバスを作成
-                    canvas = QPixmap(available_width, available_height)
-                    canvas.fill(Qt.transparent)
-                    
-                    # キャンバスに画像を中央配置で描画
-                    painter = QPainter(canvas)
-                    image_x = (available_width - new_width) // 2
-                    image_y = (available_height - new_height) // 2
-                    
-                    # QImage作成時にバッファのコピーを確実に保持
-                    qimage = QImage(image_bytes, new_width, new_height, QImage.Format_RGBA8888).copy()
-                    image_pixmap = QPixmap.fromImage(qimage)
-                    painter.drawPixmap(image_x, image_y, image_pixmap)
-                    painter.end()
-                
-                # ハートなしキャンバスとジオメトリを保存（オーバーレイ再描画用）
-                self._last_single_canvas = canvas.copy()
-                self._last_single_image_geom = (image_x, image_y, new_width, new_height)
+                # キャッシュに格納（同じサイズで再表示するときに再利用）
+                self._image_prefetcher.put_cache(
+                    image_path, available_width, available_height,
+                    new_width, new_height, image_bytes
+                )
 
-                # お気に入りの場合はハートを表示（画像の左下を基準）
-                if self.tag_manager:
-                    try:
-                        is_favorite = self._get_favorite(image_path)
-                        if is_favorite:
-                            # 画像の位置情報を渡してハートを描画
-                            canvas = self.draw_favorite_heart_on_canvas(canvas, heart_size=25, 
-                                                                        image_x=image_x, 
-                                                                        image_y=image_y, 
-                                                                        image_width=new_width, 
-                                                                        image_height=new_height)
-                    except Exception as e:
-                        print(f"Failed to check favorite status: {e}")
+            # 表示領域サイズの透明なキャンバスを作成し、中央に画像を貼る
+            canvas = QPixmap(available_width, available_height)
+            canvas.fill(Qt.transparent)
+            painter = QPainter(canvas)
+            image_x = (available_width - new_width) // 2
+            image_y = (available_height - new_height) // 2
+            qimage = QImage(image_bytes, new_width, new_height, QImage.Format_RGBA8888).copy()
+            image_pixmap = QPixmap.fromImage(qimage)
+            painter.drawPixmap(image_x, image_y, image_pixmap)
+            painter.end()
 
-                # ピクセル単位で正確に表示
-                self.single_label.setPixmap(canvas)
+            # ハートなしキャンバスとジオメトリを保存（オーバーレイ再描画用）
+            self._last_single_canvas = canvas.copy()
+            self._last_single_image_geom = (image_x, image_y, new_width, new_height)
 
-                self.update_window_title()
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Failed to display image {image_path}.")
-                print(f"Failed to load image {image_path}: {e}")
+            # お気に入りの場合はハートを表示（画像の左下を基準）
+            if self.tag_manager:
+                try:
+                    is_favorite = self._get_favorite(image_path)
+                    if is_favorite:
+                        canvas = self.draw_favorite_heart_on_canvas(
+                            canvas, heart_size=25,
+                            image_x=image_x, image_y=image_y,
+                            image_width=new_width, image_height=new_height
+                        )
+                except Exception as e:
+                    print(f"Failed to check favorite status: {e}")
+
+            # ピクセル単位で正確に表示
+            self.single_label.setPixmap(canvas)
+            self.update_window_title()
+
+            # 次/前の画像をバックグラウンドでプリフェッチ
+            self._prefetch_neighbors_single(available_width, available_height)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to display image {image_path}.")
+            print(f"Failed to load image {image_path}: {e}")
+
+    def _prefetch_neighbors_single(self, target_w, target_h):
+        """シングル表示の現在 index の前後を非同期プリフェッチする。"""
+        if not self.images:
+            return
+        n = len(self.images)
+        if n <= 1:
+            return
+        # 直後 → 直前 → 2 つ先（スライドショー方向に厚く）
+        for offset in (1, -1, 2):
+            idx = (self.current_image_index + offset) % n
+            self._image_prefetcher.request(self.images[idx], target_w, target_h)
 
     def show_image_grid(self):
         """4分割グリッド表示モード"""
@@ -3771,6 +3886,11 @@ class ImageViewer(QMainWindow):
                 tag_progress.close()
             self._tag_writer.stop()
             self._tag_writer.wait()
+
+        # 画像プリフェッチャを停止（キャッシュは破棄）
+        if getattr(self, '_image_prefetcher', None) is not None and self._image_prefetcher.isRunning():
+            self._image_prefetcher.stop()
+            self._image_prefetcher.wait()
 
         # お気に入りリスナーを解除（複数インスタンス生成時の重複通知・参照リークを防ぐ）
         if self.tag_manager is not None:
