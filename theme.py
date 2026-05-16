@@ -398,6 +398,47 @@ QLabel#InfoBanner {{
     margin: 5px 0;
 }}
 
+/* ハートボタン（お気に入り） — dynamic property [favorited="true"] で着色変更 */
+QPushButton#HeartButton {{
+    background-color: {t.surface_elevated};
+    color: {t.text_muted};
+    border: 1px solid {t.border};
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 18px;
+}}
+QPushButton#HeartButton:hover {{
+    background-color: {t.surface_hover};
+    border-color: {t.heart};
+    color: {t.heart};
+}}
+QPushButton#HeartButton[favorited="true"] {{
+    color: {t.heart};
+    border-color: {t.heart};
+    font-weight: bold;
+}}
+
+/* × クリアボタン（検索/除外をクリア） */
+QPushButton#ClearButton {{
+    background-color: transparent;
+    color: {t.text_muted};
+    border: 1px solid transparent;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 14px;
+    min-width: 24px;
+    max-width: 32px;
+}}
+QPushButton#ClearButton:hover {{
+    background-color: {t.danger};
+    color: white;
+    border-color: {t.danger};
+}}
+QPushButton#ClearButton:pressed {{
+    background-color: {t.danger_hover};
+}}
+
 /* メタデータカード用フレーム */
 QFrame#MetaCard {{
     background-color: {t.surface_elevated};

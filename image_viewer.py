@@ -1399,7 +1399,7 @@ class ImageViewer(QMainWindow):
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumSize(200, 150)
-            label.setStyleSheet("border: 1px solid gray;")
+            label.setStyleSheet("border: 1px solid #3d3d44;")
             # クリックイベント用のカスタムプロパティ
             label.grid_index = i
             label.mousePressEvent = lambda event, idx=i: self.grid_label_clicked(idx)
@@ -1615,21 +1615,10 @@ class ImageViewer(QMainWindow):
         # お気に入りハートボタン（タグシステムが利用可能な場合）
         if TAG_SYSTEM_AVAILABLE and self.tag_manager:
             self.favorite_heart_button = QPushButton("♡")
+            self.favorite_heart_button.setObjectName("HeartButton")
+            self.favorite_heart_button.setProperty("favorited", False)
             self.favorite_heart_button.setToolTip("お気に入りを切り替え (Fキー)")
             self.favorite_heart_button.clicked.connect(lambda: self.toggle_favorite_status())
-            self.favorite_heart_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #555555;
-                    color: #888888;
-                    border: none;
-                    padding: 5px 8px;
-                    border-radius: 3px;
-                    font-size: 16px;
-                }
-                QPushButton:hover {
-                    background-color: #666666;
-                }
-            """)
             button_layout.addWidget(self.favorite_heart_button)
         else:
             self.favorite_heart_button = None
@@ -1896,53 +1885,26 @@ class ImageViewer(QMainWindow):
         # スペーサーを追加
         self.sidebar_content_layout.addStretch()
     
-    # ハートボタンのスタイルシート（毎回文字列を組み立てる無駄を省くため事前計算）
-    _HEART_STYLE_FAVORITED = """
-        QPushButton {
-            background-color: #555555;
-            color: #FF3250;
-            border: none;
-            padding: 5px 8px;
-            border-radius: 3px;
-            font-size: 16px;
-            font-weight: bold;
-        }
-        QPushButton:hover {
-            background-color: #666666;
-        }
-    """
-    _HEART_STYLE_NOT_FAVORITED = """
-        QPushButton {
-            background-color: #555555;
-            color: #888888;
-            border: none;
-            padding: 5px 8px;
-            border-radius: 3px;
-            font-size: 16px;
-        }
-        QPushButton:hover {
-            background-color: #666666;
-        }
-    """
-
     def update_favorite_heart_button(self, is_favorite):
         """ハートボタンの表示状態を更新。
 
-        前回適用した状態と同じ場合は setStyleSheet を呼ばない（次/前画像へ
-        移動した先が同じお気に入り状態の場合に Qt のスタイル再計算を回避）。
+        スタイルは theme.py の QSS 側で QPushButton#HeartButton[favorited="true"]
+        セレクタで決まるため、ここではプロパティと再ポリッシュだけ行う。
+        前回と同じ状態なら何もしない（次/前画像で同じ状態の場合の再計算回避）。
         """
         if not hasattr(self, 'favorite_heart_button') or not self.favorite_heart_button:
             return
 
         is_favorite = bool(is_favorite)
         if getattr(self, '_heart_button_state', None) != is_favorite:
-            self.favorite_heart_button.setText("♡")
-            self.favorite_heart_button.setStyleSheet(
-                self._HEART_STYLE_FAVORITED if is_favorite else self._HEART_STYLE_NOT_FAVORITED
-            )
+            btn = self.favorite_heart_button
+            btn.setText("♡")
+            btn.setProperty("favorited", is_favorite)
+            # 動的プロパティを反映するために style を再適用
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
             self._heart_button_state = is_favorite
 
-        # ツールチップ更新は軽量なので無条件で行う
         tooltip = "お気に入りから削除 (Fキー)" if is_favorite else "お気に入りに追加 (Fキー)"
         self.favorite_heart_button.setToolTip(tooltip)
     
@@ -2998,9 +2960,9 @@ class ImageViewer(QMainWindow):
                     # 選択されたグリッドには赤い境界線、その他は通常の境界線
                     # selected_grid が -1 の場合はどのグリッドも選択されていない
                     if self.selected_grid != -1 and i == self.selected_grid:
-                        self.grid_labels[i].setStyleSheet("border: 3px solid red;")
+                        self.grid_labels[i].setStyleSheet("border: 3px solid #4ea1ff;")
                     else:
-                        self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
+                        self.grid_labels[i].setStyleSheet("border: 1px solid #3d3d44;")
                     
                     self.grid_labels[i].setPixmap(pixmap)
                     
@@ -3012,9 +2974,9 @@ class ImageViewer(QMainWindow):
                     
                     # エラー時も選択状態に応じて境界線を設定
                     if self.selected_grid != -1 and i == self.selected_grid:
-                        self.grid_labels[i].setStyleSheet("border: 3px solid red;")
+                        self.grid_labels[i].setStyleSheet("border: 3px solid #4ea1ff;")
                     else:
-                        self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
+                        self.grid_labels[i].setStyleSheet("border: 1px solid #3d3d44;")
             else:
                 self.grid_labels[i].clear()
                 self.grid_labels[i].setText("画像なし")
@@ -3023,9 +2985,9 @@ class ImageViewer(QMainWindow):
                 
                 # 画像がない場合も選択状態に応じて境界線を設定
                 if self.selected_grid != -1 and i == self.selected_grid:
-                    self.grid_labels[i].setStyleSheet("border: 3px solid red;")
+                    self.grid_labels[i].setStyleSheet("border: 3px solid #4ea1ff;")
                 else:
-                    self.grid_labels[i].setStyleSheet("border: 1px solid gray;")
+                    self.grid_labels[i].setStyleSheet("border: 1px solid #3d3d44;")
 
         self.update_window_title()
 
@@ -3132,7 +3094,7 @@ class ImageViewer(QMainWindow):
             return
         self.selected_grid = -1
         for label in self.grid_labels:
-            label.setStyleSheet("border: 1px solid gray;")
+            label.setStyleSheet("border: 1px solid #3d3d44;")
 
     def grid_label_clicked(self, grid_index):
         """グリッド内の画像がクリックされた時の処理（トグル動作）"""
@@ -3792,7 +3754,7 @@ class ImageViewer(QMainWindow):
                     for label in self.grid_labels:
                         label.clear()
                         label.setText("画像なし")
-                        label.setStyleSheet("border: 1px solid gray;")
+                        label.setStyleSheet("border: 1px solid #3d3d44;")
                     
                     self.selected_grid = -1  # 選択状態をリセット
                     QMessageBox.information(self, '情報', 'すべての画像が削除されました。')
