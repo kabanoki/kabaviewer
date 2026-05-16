@@ -1,5 +1,6 @@
 # back
 import os
+import re
 import json
 import queue
 import random
@@ -1853,7 +1854,13 @@ class ImageViewer(QMainWindow):
                 )
                 self.sidebar_content_layout.addWidget(hire_section)
             
-            # パラメータセクション
+            # 使用 LoRA セクション（パラメータの上に配置して見つけやすく）
+            loras = self._extract_loras(parsed_data)
+            if loras:
+                loras_section = self.create_sidebar_loras_section(loras)
+                self.sidebar_content_layout.addWidget(loras_section)
+
+            # パラメータセクション（lora hashes は LoRA セクションに譲るので除外して表示）
             if parsed_data['parameters']:
                 param_section = self.create_sidebar_parameters_section(parsed_data['parameters'])
                 self.sidebar_content_layout.addWidget(param_section)
@@ -2203,73 +2210,188 @@ class ImageViewer(QMainWindow):
         
         return widget
     
+    # ------------------------------------------------------------------
+    # LoRA 抽出と表示
+    # ------------------------------------------------------------------
+
+    _LORA_PROMPT_RE = re.compile(r"<lora:([^:>]+):([0-9]*\.?[0-9]+)>", re.IGNORECASE)
+
+    def _extract_loras(self, parsed_data):
+        """parsed_data から LoRA 情報を抽出して [{name, weight, hash}, ...] を返す。
+
+        - parameters["lora hashes"] からは「name: hash」形式を分解（重みは含まれない）
+        - prompt / negative_prompt / hire_prompt 中の <lora:name:weight> から重みを補完
+        """
+        parameters = parsed_data.get("parameters", {}) or {}
+        # 順序保持の辞書（name -> info）
+        loras = collections.OrderedDict()
+
+        # 1) lora hashes パラメータから名前 + ハッシュ
+        raw = parameters.get("lora hashes") or parameters.get("Lora hashes") or parameters.get("LORA HASHES")
+        if raw:
+            s = str(raw).strip().strip('"').strip("'")
+            for entry in s.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                if ":" in entry:
+                    name, _, h = entry.partition(":")
+                    name = name.strip()
+                    h = h.strip()
+                    if name:
+                        loras[name] = {"name": name, "weight": None, "hash": h or None}
+                else:
+                    loras[entry] = {"name": entry, "weight": None, "hash": None}
+
+        # 2) プロンプト群を走査して <lora:name:weight> から重みを取得
+        prompt_sources = [
+            parsed_data.get("prompt", ""),
+            parsed_data.get("negative_prompt", ""),
+            parsed_data.get("hire_prompt", ""),
+        ]
+        for text in prompt_sources:
+            if not text:
+                continue
+            for m in self._LORA_PROMPT_RE.finditer(text):
+                name = m.group(1).strip()
+                try:
+                    weight = float(m.group(2))
+                except ValueError:
+                    weight = None
+                if name in loras:
+                    if loras[name].get("weight") is None:
+                        loras[name]["weight"] = weight
+                else:
+                    loras[name] = {"name": name, "weight": weight, "hash": None}
+
+        return list(loras.values())
+
+    @staticmethod
+    def _format_lora_entry(lora):
+        if lora.get("weight") is not None:
+            return f"{lora['name']} × {lora['weight']:.2f}"
+        return lora["name"]
+
+    def create_sidebar_loras_section(self, loras):
+        """サイドバー用の LoRA セクションを作成。
+
+        各 LoRA を「名前 × 重み」で 1 行表示。ハッシュは表示しない。
+        重みが取れなかった場合は名前のみ表示。
+        """
+        frame = QFrame()
+        frame.setObjectName("MetaCard")
+        frame.setFrameStyle(QFrame.NoFrame)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        # ヘッダー（タイトル + 全コピー）
+        header = QHBoxLayout()
+        title = QLabel(f"🎨 使用LoRA ({len(loras)}件)")
+        title.setObjectName("MetaCardTitle")
+        header.addWidget(title)
+        header.addStretch()
+
+        all_text = "\n".join(self._format_lora_entry(l) for l in loras)
+        copy_all = QPushButton("📋")
+        copy_all.setObjectName("IconButton")
+        copy_all.setToolTip("全 LoRA をコピー")
+        copy_all.setFixedSize(25, 20)
+        copy_all.clicked.connect(lambda: QApplication.clipboard().setText(all_text))
+        header.addWidget(copy_all)
+        layout.addLayout(header)
+
+        # 各 LoRA を行として表示
+        for lora in loras:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+
+            name_label = QLabel(lora["name"])
+            name_label.setObjectName("LoraName")
+            name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            name_label.setWordWrap(True)
+            name_label.setStyleSheet("QLabel#LoraName { font-size: 12px; font-weight: 500; }")
+            row.addWidget(name_label, 1)
+
+            if lora.get("weight") is not None:
+                weight_label = QLabel(f"× {lora['weight']:.2f}")
+                weight_label.setObjectName("LoraWeight")
+                weight_label.setStyleSheet(
+                    "QLabel#LoraWeight {"
+                    "  font-size: 11px;"
+                    "  font-weight: 600;"
+                    "  padding: 1px 6px;"
+                    "  border-radius: 8px;"
+                    "  background-color: rgba(78,161,255,0.18);"
+                    "  color: #4ea1ff;"
+                    "}"
+                )
+                row.addWidget(weight_label)
+
+            # 個別コピー（名前のみ）
+            copy_btn = QPushButton("📋")
+            copy_btn.setObjectName("IconButton")
+            copy_btn.setToolTip(f"「{lora['name']}」をコピー")
+            copy_btn.setFixedSize(22, 18)
+            copy_btn.clicked.connect(
+                lambda checked=False, n=lora["name"]: QApplication.clipboard().setText(n)
+            )
+            row.addWidget(copy_btn)
+
+            container = QWidget()
+            container.setLayout(row)
+            layout.addWidget(container)
+
+        return frame
+
     def create_sidebar_parameters_section(self, parameters):
         """サイドバー用のパラメータセクションを作成"""
         frame = QFrame()
-        frame.setFrameStyle(QFrame.Box)
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 6px;
-                margin: 5px 0px;
-                padding: 8px;
-            }
-        """)
-        
+        frame.setObjectName("MetaCard")
+        frame.setFrameStyle(QFrame.NoFrame)
+
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(8, 8, 8, 8)
-        
+
         # ヘッダー
         header_layout = QHBoxLayout()
         title_label = QLabel("Parameters")
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 13px;
-                font-weight: bold;
-                color: #ffffff;
-                margin-bottom: 5px;
-            }
-        """)
+        title_label.setObjectName("MetaCardTitle")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
-        
+
         # コピーボタン
         copy_btn = QPushButton("📋")
+        copy_btn.setObjectName("IconButton")
         copy_btn.setToolTip("パラメータをコピー")
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #555555;
-                border: none;
-                color: white;
-                padding: 3px 6px;
-                border-radius: 3px;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #666666;
-            }
-        """)
-        
-        param_text_lines = [f"{key}: {value}" for key, value in parameters.items()]
+
+        # 表示するパラメータ: lora hashes は専用セクションがあるので除外
+        display_params = {
+            k: v for k, v in parameters.items()
+            if k.lower() != "lora hashes"
+        }
+
+        param_text_lines = [f"{key}: {value}" for key, value in display_params.items()]
         param_text = "\n".join(param_text_lines)
-        
+
         def copy_params():
             clipboard = QApplication.clipboard()
             clipboard.setText(param_text)
             original_text = copy_btn.text()
             copy_btn.setText("✓")
             QTimer.singleShot(800, lambda: copy_btn.setText(original_text))
-        
+
         copy_btn.clicked.connect(copy_params)
         header_layout.addWidget(copy_btn)
         layout.addLayout(header_layout)
-        
+
         # パラメータを縦並びで表示（個別コピー・選択機能付き）
-        for key, value in parameters.items():
+        for key, value in display_params.items():
             param_item = self.create_sidebar_parameter_item(key.upper(), value)
             layout.addWidget(param_item)
-        
+
         return frame
     
     def create_sidebar_exif_section(self, exif_info):
