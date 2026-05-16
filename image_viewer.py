@@ -7,7 +7,7 @@ import shutil
 import datetime
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QComboBox, QTabWidget, QMenu, QFileDialog, QMessageBox, QAction, QInputDialog, QGridLayout, QDialog, QTextEdit, QScrollArea, QFrame, QApplication, QProgressDialog, QProgressBar, QListView, QTreeView, QListWidget, QListWidgetItem, QDialogButtonBox
 from PyQt5.QtGui import QPixmap, QImage, QContextMenuEvent, QFont, QIcon, QPainter, QColor, QPen, QBrush, QPainterPath
-from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal
+from PyQt5.QtCore import Qt, QMutex, QThread, QTimer, QSettings, QPointF, pyqtSignal, QUrl
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from history import HistoryTab
@@ -162,8 +162,8 @@ class MultiFolderPickerDialog(QDialog):
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "「➕ フォルダを追加」を押して、必要な数だけフォルダを選んでください。\n"
-            "外部ストレージは追加先ダイアログのサイドバーから選択できます。"
+            "「➕ フォルダを追加」で一度に複数のフォルダを選べます（Cmd/Ctrl/Shift クリック）。\n"
+            "外部ストレージはダイアログのサイドバー（/Volumes 配下）から選択できます。"
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -195,18 +195,63 @@ class MultiFolderPickerDialog(QDialog):
         self._last_dir = ""
 
     def _add_folder(self):
+        """非ネイティブ QFileDialog で複数フォルダをまとめて選択する。
+
+        Qt のネイティブダイアログは複数フォルダ選択ができないため非ネイティブを使う。
+        非ネイティブは macOS の Finder サイドバー（外部ストレージ等）が出ないので、
+        /Volumes と各マウントボリュームを明示的にサイドバー URL に追加する。
+        """
         start_dir = self._last_dir or os.path.expanduser("~")
-        # ネイティブ単一フォルダ選択（macOS のサイドバーから外部ストレージも見える）
-        folder = QFileDialog.getExistingDirectory(self, "フォルダを追加", start_dir)
-        if not folder:
+        dialog = QFileDialog(self, "フォルダを追加（複数選択可）", start_dir)
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+
+        # サイドバーに /Volumes 配下（外部ストレージ含む）を明示的に追加
+        sidebar = list(dialog.sidebarUrls())
+        try:
+            seen = {u.toLocalFile() for u in sidebar}
+            if os.path.isdir("/Volumes"):
+                if "/Volumes" not in seen:
+                    sidebar.append(QUrl.fromLocalFile("/Volumes"))
+                # マウントされている各ボリュームを個別に追加
+                for name in sorted(os.listdir("/Volumes")):
+                    vol_path = os.path.join("/Volumes", name)
+                    if os.path.isdir(vol_path) and vol_path not in seen:
+                        sidebar.append(QUrl.fromLocalFile(vol_path))
+            dialog.setSidebarUrls(sidebar)
+        except Exception as e:
+            print(f"sidebar 構成エラー（無視可）: {e}")
+
+        # 内部 view を複数選択モードに変更
+        file_view = dialog.findChild(QListView, "listView")
+        if file_view:
+            file_view.setSelectionMode(QListView.MultiSelection)
+        tree_view = dialog.findChild(QTreeView)
+        if tree_view:
+            tree_view.setSelectionMode(QTreeView.MultiSelection)
+
+        if dialog.exec_() != QDialog.Accepted:
             return
-        # 重複は無視
-        existing = self.get_folders()
-        if folder in existing:
+
+        selected = [p for p in dialog.selectedFiles() if os.path.isdir(p)]
+        if not selected:
             return
-        item = QListWidgetItem(folder)
-        self._list.addItem(item)
-        self._last_dir = os.path.dirname(folder) or folder
+
+        # 既存リストの重複を除いて追加
+        existing = set(self.get_folders())
+        added = 0
+        last_added = ""
+        for folder in selected:
+            if folder in existing:
+                continue
+            self._list.addItem(QListWidgetItem(folder))
+            existing.add(folder)
+            last_added = folder
+            added += 1
+
+        if last_added:
+            self._last_dir = os.path.dirname(last_added) or last_added
         self._ok_button.setEnabled(self._list.count() > 0)
 
     def _remove_selected(self):
