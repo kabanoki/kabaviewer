@@ -610,25 +610,10 @@ class TagTab(QWidget):
         
         # 除外タグクリアボタン
         self.exclude_clear_btn = QPushButton("×")
+        self.exclude_clear_btn.setObjectName("ClearButton")
         self.exclude_clear_btn.setMaximumWidth(30)
         self.exclude_clear_btn.setToolTip("除外タグをクリア")
         self.exclude_clear_btn.clicked.connect(self.clear_exclude_tags)
-        self.exclude_clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ff6b6b;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #ff5252;
-            }
-            QPushButton:pressed {
-                background-color: #e53935;
-            }
-        """)
         exclude_input_layout.addWidget(self.exclude_clear_btn)
         search_layout.addLayout(exclude_input_layout)
         
@@ -1034,20 +1019,9 @@ class TagTab(QWidget):
         row_layout.addWidget(line)
 
         remove_btn = QPushButton("×")
+        remove_btn.setObjectName("ClearButton")
         remove_btn.setMaximumWidth(30)
         remove_btn.setToolTip("この行を削除（最後の1行はクリアのみ）")
-        remove_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ff6b6b;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover { background-color: #ff5252; }
-            QPushButton:pressed { background-color: #e53935; }
-        """)
         row = {"input": line, "container": container, "remove_btn": remove_btn}
         remove_btn.clicked.connect(lambda _checked=False, r=row: self._remove_search_group_row(r))
         row_layout.addWidget(remove_btn)
