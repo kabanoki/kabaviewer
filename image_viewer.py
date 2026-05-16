@@ -1951,47 +1951,53 @@ class ImageViewer(QMainWindow):
         # スペーサーを追加
         self.sidebar_content_layout.addStretch()
     
+    # ハートボタンのスタイルシート（毎回文字列を組み立てる無駄を省くため事前計算）
+    _HEART_STYLE_FAVORITED = """
+        QPushButton {
+            background-color: #555555;
+            color: #FF3250;
+            border: none;
+            padding: 5px 8px;
+            border-radius: 3px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: #666666;
+        }
+    """
+    _HEART_STYLE_NOT_FAVORITED = """
+        QPushButton {
+            background-color: #555555;
+            color: #888888;
+            border: none;
+            padding: 5px 8px;
+            border-radius: 3px;
+            font-size: 16px;
+        }
+        QPushButton:hover {
+            background-color: #666666;
+        }
+    """
+
     def update_favorite_heart_button(self, is_favorite):
-        """ハートボタンの表示状態を更新"""
+        """ハートボタンの表示状態を更新。
+
+        前回適用した状態と同じ場合は setStyleSheet を呼ばない（次/前画像へ
+        移動した先が同じお気に入り状態の場合に Qt のスタイル再計算を回避）。
+        """
         if not hasattr(self, 'favorite_heart_button') or not self.favorite_heart_button:
             return
-        
-        # ボタンのテキストと色を更新
-        if is_favorite:
-            # お気に入り済み：赤いハート
+
+        is_favorite = bool(is_favorite)
+        if getattr(self, '_heart_button_state', None) != is_favorite:
             self.favorite_heart_button.setText("♡")
-            self.favorite_heart_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #555555;
-                    color: #FF3250;
-                    border: none;
-                    padding: 5px 8px;
-                    border-radius: 3px;
-                    font-size: 16px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #666666;
-                }
-            """)
-        else:
-            # 未お気に入り：グレーのハート
-            self.favorite_heart_button.setText("♡")
-            self.favorite_heart_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #555555;
-                    color: #888888;
-                    border: none;
-                    padding: 5px 8px;
-                    border-radius: 3px;
-                    font-size: 16px;
-                }
-                QPushButton:hover {
-                    background-color: #666666;
-                }
-            """)
-        
-        # ツールチップも更新
+            self.favorite_heart_button.setStyleSheet(
+                self._HEART_STYLE_FAVORITED if is_favorite else self._HEART_STYLE_NOT_FAVORITED
+            )
+            self._heart_button_state = is_favorite
+
+        # ツールチップ更新は軽量なので無条件で行う
         tooltip = "お気に入りから削除 (Fキー)" if is_favorite else "お気に入りに追加 (Fキー)"
         self.favorite_heart_button.setToolTip(tooltip)
     
