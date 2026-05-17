@@ -1324,23 +1324,12 @@ class TagManager:
         
         return False
     
-    def _save_to_qsettings_backup(self, file_path, tags):
-        """QSettingsにバックアップ保存"""
-        folder_path = os.path.dirname(file_path)
-        file_name = os.path.basename(file_path)
-        
-        folder_tags = self.settings.value(f"tags/{folder_path}", {}, type=dict)
-        folder_tags[file_name] = tags
-        self.settings.setValue(f"tags/{folder_path}", folder_tags)
-    
-    def _get_tags_from_qsettings_backup(self, file_path):
-        """QSettingsバックアップからタグを取得"""
-        folder_path = os.path.dirname(file_path)
-        file_name = os.path.basename(file_path)
-        
-        folder_tags = self.settings.value(f"tags/{folder_path}", {}, type=dict)
-        return folder_tags.get(file_name, [])
-    
+    # NOTE: _save_to_qsettings_backup / _get_tags_from_qsettings_backup は
+    # ファイル単位キーで保存する軽量版（上の方）を使う。以前ここに重複定義
+    # （フォルダ単位 dict 版、O(N) 読み書き）があり、Python の後勝ちルールで
+    # 採用されていたため、1 フォルダに N 枚あると O(N²) で激重になっていた。
+    # 削除済み。
+
     def _save_favorite_to_qsettings(self, file_path, is_favorite):
         """QSettingsにお気に入り状態をバックアップ保存"""
         folder_path = os.path.dirname(file_path)
