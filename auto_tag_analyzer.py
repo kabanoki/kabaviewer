@@ -830,7 +830,10 @@ class AutoTagAnalyzer:
         for key, value in metadata.items():
             if not isinstance(value, str):
                 continue
-            
+            # EXIF メタデータでは key が int 定数の場合がある（PIL の _getexif）
+            if not isinstance(key, str):
+                continue
+
             key_lower = key.lower()
             
             if "prompt" in key_lower and "negative" not in key_lower and "hires" not in key_lower:

@@ -689,15 +689,12 @@ class TagManager:
         finally:
             conn.close()
 
-        # QSettings は SQLite トランザクションの外で
-        t_qsettings_start = _time.time()
-        for file_path, tags in items:
-            try:
-                clean_tags = sorted(set(tags)) if tags else []
-                self._save_to_qsettings_backup(file_path, clean_tags)
-            except Exception as e:
-                print(f"[save_tags_bulk QSettings] {file_path}: {e}")
-        t_qsettings = _time.time() - t_qsettings_start
+        # QSettings バックアップは bulk では行わない:
+        # macOS の cfprefsd が累積キーの増加に伴い、ある時点で plist 全件を
+        # ディスク同期するため数百 ms 〜 数秒のスパイクが定期的に発生する。
+        # 大量タグ付けでは致命的なので、SQLite を唯一の真実とする。
+        # 必要なら「🛠 メンテナンス → 💾 バックアップ作成」で DB を保存可能。
+        t_qsettings = 0.0
 
         # EXIF はオプション
         t_exif = 0.0
