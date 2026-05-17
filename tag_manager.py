@@ -630,11 +630,20 @@ class TagManager:
         if not items:
             return []
 
+        import time as _time
+        t_total_start = _time.time()
+
         results = []
+        update_count = 0
+        insert_count = 0
+        sum_hash_time = 0.0
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        t_db_loop = 0.0
+        t_commit = 0.0
         try:
             cursor.execute("BEGIN")
+            t_loop_start = _time.time()
             for file_path, tags in items:
                 clean_tags = sorted(set(tags)) if tags else []
                 tags_json = json.dumps(clean_tags, ensure_ascii=False)
@@ -646,7 +655,9 @@ class TagManager:
                     # 新規レコード: hash + INSERT
                     try:
                         if os.path.exists(file_path):
+                            th = _time.time()
                             file_hash = self.calculate_file_hash(file_path)
+                            sum_hash_time += _time.time() - th
                             if file_hash:
                                 file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
                                 cursor.execute(
@@ -656,6 +667,7 @@ class TagManager:
                                     (file_hash, file_path, os.path.basename(file_path), tags_json, file_mod_time),
                                 )
                                 results.append((file_path, True))
+                                insert_count += 1
                             else:
                                 results.append((file_path, False))
                         else:
@@ -665,7 +677,11 @@ class TagManager:
                         results.append((file_path, False))
                 else:
                     results.append((file_path, True))
+                    update_count += 1
+            t_db_loop = _time.time() - t_loop_start
+            t_commit_start = _time.time()
             conn.commit()
+            t_commit = _time.time() - t_commit_start
         except Exception as e:
             conn.rollback()
             print(f"[save_tags_bulk] トランザクション失敗: {e}")
@@ -673,21 +689,35 @@ class TagManager:
         finally:
             conn.close()
 
-        # QSettings は SQLite トランザクションの外で（軽量）
+        # QSettings は SQLite トランザクションの外で
+        t_qsettings_start = _time.time()
         for file_path, tags in items:
             try:
                 clean_tags = sorted(set(tags)) if tags else []
                 self._save_to_qsettings_backup(file_path, clean_tags)
             except Exception as e:
                 print(f"[save_tags_bulk QSettings] {file_path}: {e}")
+        t_qsettings = _time.time() - t_qsettings_start
 
-        # EXIF はオプション（通常はワーカーキューに任せる）
+        # EXIF はオプション
+        t_exif = 0.0
         if write_to_file:
+            t_exif_start = _time.time()
             for file_path, tags in items:
                 try:
                     self._save_to_exif(file_path, sorted(set(tags)) if tags else [])
                 except Exception as e:
                     print(f"[save_tags_bulk EXIF] {file_path}: {e}")
+            t_exif = _time.time() - t_exif_start
+
+        t_total = _time.time() - t_total_start
+        print(f"[save_tags_bulk] n={len(items)} upd={update_count} ins={insert_count} "
+              f"db_loop={t_db_loop*1000:.0f}ms "
+              f"hash_total={sum_hash_time*1000:.0f}ms "
+              f"commit={t_commit*1000:.0f}ms "
+              f"qsettings={t_qsettings*1000:.0f}ms "
+              f"exif={t_exif*1000:.0f}ms "
+              f"total={t_total*1000:.0f}ms")
 
         return results
     
