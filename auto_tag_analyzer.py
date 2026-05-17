@@ -11,7 +11,35 @@ class AutoTagAnalyzer:
     
     def __init__(self):
         self.settings = QSettings("MyCompany", "ImageViewerApp")
+        # ルール / コンパイル済みパターンのキャッシュ
+        # 一括解析時に毎回 dict 再構築 + 正規表現 compile が走るのを防ぐ
+        # キーは (keyword_lower, compiled_pattern_or_None, tags_tuple)
+        self._patterns_cache = None
         self.load_default_rules()
+
+    def _invalidate_rules_cache(self):
+        """ルール変更時にキャッシュを破棄。"""
+        self._patterns_cache = None
+
+    def _build_patterns_cache(self):
+        """マッピングルールから正規表現パターンを事前コンパイルする。"""
+        rules = self.load_mapping_rules()
+        # キーワード長で降順にしておき、長いマッチを優先
+        items = sorted(rules.items(), key=lambda kv: len(kv[0]) if isinstance(kv[0], str) else 0, reverse=True)
+        cache = []
+        for keyword, tags in items:
+            if not isinstance(keyword, str) or not keyword:
+                continue
+            if not isinstance(tags, list):
+                continue
+            keyword_lower = keyword.lower()
+            if "_" in keyword_lower:
+                # アンダースコア含みは単純な substring 一致
+                cache.append((keyword_lower, None, tuple(tags)))
+            else:
+                pattern = re.compile(r"\b" + re.escape(keyword_lower) + r"\b")
+                cache.append((keyword_lower, pattern, tuple(tags)))
+        self._patterns_cache = cache
     
     def load_default_rules(self):
         """デフォルトのタグマッピングルールを読み込み"""
@@ -215,25 +243,20 @@ class AutoTagAnalyzer:
         
         # テキストを小文字に変換して解析
         text_lower = all_text.lower()
-        
-        # ユーザー設定のマッピングルールを適用（長いキーワード優先）
-        mapping_rules = self.load_mapping_rules()
-        
-        # キーワードを長さ順でソート（長い順）
-        sorted_keywords = sorted(mapping_rules.keys(), key=len, reverse=True)
-        
-        matched_keywords = set()
-        for keyword in sorted_keywords:
-            # キーワードの型安全チェック
-            if not isinstance(keyword, str):
-                print(f"[警告] キーワードが文字列でない: {type(keyword)} - {keyword}")
-                continue
-                
-            keyword_lower = keyword.lower()
-            if self._keyword_matches(keyword_lower, text_lower):
-                suggested_tags.update(mapping_rules[keyword])
-                matched_keywords.add(keyword_lower)
-        
+
+        # 事前コンパイル済みパターンを再利用（インスタンスにキャッシュ）
+        if self._patterns_cache is None:
+            self._build_patterns_cache()
+
+        for keyword_lower, pattern, tags in self._patterns_cache:
+            if pattern is None:
+                # アンダースコア含み: substring 一致
+                if keyword_lower in text_lower:
+                    suggested_tags.update(tags)
+            else:
+                if pattern.search(text_lower):
+                    suggested_tags.update(tags)
+
         return suggested_tags
     
     def _keyword_matches(self, keyword: str, text: str) -> bool:
@@ -495,13 +518,14 @@ class AutoTagAnalyzer:
     def save_mapping_rules(self, rules: Dict[str, List[str]]):
         """カスタムマッピングルールを保存"""
         self.settings.setValue("auto_tag_mapping_rules", rules)
-    
+        self._invalidate_rules_cache()
+
     def add_mapping_rule(self, keyword: str, tags: List[str]):
         """新しいマッピングルールを追加"""
         custom_rules = self.settings.value("auto_tag_mapping_rules", {}, type=dict)
         custom_rules[keyword] = tags
         self.save_mapping_rules(custom_rules)
-    
+
     def remove_mapping_rule(self, keyword: str):
         """マッピングルールを削除"""
         custom_rules = self.settings.value("auto_tag_mapping_rules", {}, type=dict)
