@@ -1825,72 +1825,58 @@ class TagApplyWorker(QThread):
         total = len(self.items)
 
         try:
-            # ── 準備フェーズ: 全件の最終タグセットを構築 ──
-            # 追加モードでは既存タグとマージするため一括 DB 取得 (1 クエリ)
-            existing_map = {}
-            if not self.is_replace_mode:
-                paths = [p for p, _ in self.items]
-                existing_map = self.tag_manager.get_tags_map(paths)
+            # ── ストリーミング処理: チャンクごとに「既存読込 → マージ → DB書込 → EXIF enqueue」──
+            # 以前は「全件 prep → 全件 write」と 2 段階で実行していたため、
+            # 大量フォルダで準備中が長く見えていた。チャンク（100 件）単位で
+            # 全工程をまとめて実行する事で進捗が止まらず、I/O も分散する。
+            CHUNK = 100
+            inline_exif = (not defer_exif) and (not skip_exif_entirely)
 
-            self.progress_updated.emit(0, f"準備中... (0/{total})")
-
-            prepared = []  # [(image_path, filename, final_tags), ...]
             skipped_no_change = 0
             skipped_no_tags = 0
-            for idx, (image_path, filename) in enumerate(self.items):
+            processed = 0
+
+            self.progress_updated.emit(0, f"適用中... (0/{total})")
+
+            for chunk_start in range(0, total, CHUNK):
                 if self.is_cancelled:
                     break
-                tags = self.analysis_results.get(image_path)
-                if not tags:
-                    skipped_no_tags += 1
-                    continue
 
+                chunk_items = self.items[chunk_start:chunk_start + CHUNK]
+
+                # 1) 追加モードなら、このチャンクの既存タグだけ bulk 取得
                 if self.is_replace_mode:
-                    final_tags = sorted(set(tags))
+                    existing_map_chunk = {}
                 else:
-                    existing = existing_map.get(image_path, []) or []
-                    final_tags = sorted(set(existing) | set(tags))
-                    # 変化が無ければ書き込みスキップ（Phase B）
-                    if set(final_tags) == set(existing):
-                        skipped_no_change += 1
-                        with self.progress_lock:
-                            self.applied_count += 1  # 既に適用済みとして集計
+                    chunk_paths = [p for p, _ in chunk_items]
+                    existing_map_chunk = self.tag_manager.get_tags_map(chunk_paths)
+
+                # 2) 最終タグセットを構築（変化なしはスキップ）
+                prepared_chunk = []  # [(path, filename, final_tags), ...]
+                for (image_path, filename) in chunk_items:
+                    tags = self.analysis_results.get(image_path)
+                    if not tags:
+                        skipped_no_tags += 1
                         continue
+                    if self.is_replace_mode:
+                        final_tags = sorted(set(tags))
+                    else:
+                        existing = existing_map_chunk.get(image_path, []) or []
+                        final_tags = sorted(set(existing) | set(tags))
+                        if set(final_tags) == set(existing):
+                            skipped_no_change += 1
+                            with self.progress_lock:
+                                self.applied_count += 1
+                            continue
+                    prepared_chunk.append((image_path, filename, final_tags))
 
-                prepared.append((image_path, filename, final_tags))
-
-                # 進捗イベントを軽めに（50 件ごと or 最後）
-                if (idx + 1) % 50 == 0 or idx == total - 1:
-                    self.progress_updated.emit(idx + 1, f"準備中... ({idx + 1}/{total})")
-
-            if self.is_cancelled:
-                elapsed_time = time.time() - start_time
-                self.completion_finished.emit(self.applied_count, self.total_tags, elapsed_time, self.failed_count)
-                return
-
-            # ── DB 書き込みフェーズ: チャンク単位でトランザクション + 進捗 ──
-            # 1 トランザクションだと進捗が動かないので 100 件ずつ区切る。
-            # 1000 件で 10 transaction 程度なら fsync 回数は十分少なく、
-            # 進捗バーは滑らかに動く。
-            if prepared:
-                CHUNK = 100
-                total_prepared = len(prepared)
-                self.progress_updated.emit(0, f"DB 書き込み中... (0/{total_prepared})")
-
-                # write_to_file: defer_exif=True ならワーカー側で書くので False
-                # skip_exif_entirely なら DB のみで完全に書かない
-                inline_exif = (not defer_exif) and (not skip_exif_entirely)
-
-                done_so_far = 0
-                for chunk_start in range(0, total_prepared, CHUNK):
-                    if self.is_cancelled:
-                        break
-                    chunk = prepared[chunk_start:chunk_start + CHUNK]
-                    bulk_items = [(p, t) for (p, _f, t) in chunk]
+                # 3) DB 書き込み（1 トランザクション）
+                if prepared_chunk:
+                    bulk_items = [(p, t) for (p, _f, t) in prepared_chunk]
                     results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=inline_exif)
                     ok_set = {fp for fp, ok in results if ok}
 
-                    for (path, filename, final_tags) in chunk:
+                    for (path, filename, final_tags) in prepared_chunk:
                         if path in ok_set:
                             with self.progress_lock:
                                 self.applied_count += 1
@@ -1900,20 +1886,20 @@ class TagApplyWorker(QThread):
                                 self.failed_count += 1
                                 self.failed_items.append(filename)
 
-                    # チャンクごとに EXIF をワーカーキューへ流す（並行化）
+                    # 4) EXIF をワーカーキューへ流す（直列）
                     if defer_exif and self.tag_writer is not None:
-                        for (path, _f, final_tags) in chunk:
+                        for (path, _f, final_tags) in prepared_chunk:
                             if path in ok_set:
                                 try:
                                     self.tag_writer.enqueue(path, final_tags)
                                 except Exception as e:
                                     print(f"[TagApplyWorker] EXIF enqueue 失敗: {e}")
 
-                    done_so_far += len(chunk)
-                    self.progress_updated.emit(
-                        done_so_far,
-                        f"DB 書き込み中... ({done_so_far}/{total_prepared})"
-                    )
+                processed += len(chunk_items)
+                self.progress_updated.emit(
+                    processed,
+                    f"適用中... ({processed}/{total})"
+                )
 
             # 進捗の最終更新
             self.progress_updated.emit(
