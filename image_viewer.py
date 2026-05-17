@@ -4546,11 +4546,6 @@ class ImageViewer(QMainWindow):
         
         processed_images = 0
 
-        import time as _time_dbg
-        _batch_start = _time_dbg.time()
-        print(f"[BATCH] start folders={len(folders)} total_images={total_images} "
-              f"is_replace={is_replace_mode}")
-
         # ── フェーズ1: 全フォルダの解析（読み込み）を先に終わらせる ──
         # ThreadPool で 4 並列に解析（Pillow は I/O 中に GIL を解放するので
         # 外部 SSD なら数倍速）。EXIF 書き込みは未だ起動しないので
@@ -4608,7 +4603,6 @@ class ImageViewer(QMainWindow):
             try:
                 results = {}
                 done_count = 0
-                folder_parse_start = _time_dbg.time()
                 # 1 フォルダごとに並列で全画像を解析
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
                     futures = {ex.submit(_parse_one, p): p for p in image_files}
@@ -4640,11 +4634,6 @@ class ImageViewer(QMainWindow):
                 if progress.wasCanceled():
                     break
 
-                folder_parse_time = _time_dbg.time() - folder_parse_start
-                print(f"[BATCH parse] folder={folder_name!r} "
-                      f"n={len(image_files)} time={folder_parse_time:.2f}s "
-                      f"({len(image_files)/max(folder_parse_time, 0.001):.1f} img/s)")
-
                 if results:
                     items = [(path, os.path.basename(path)) for path in results.keys()]
                     list_name = f"{folder_name} ({len(items)}枚)"
@@ -4665,9 +4654,6 @@ class ImageViewer(QMainWindow):
                 parse_cache.set_many(cache_writes)
             except Exception as e:
                 print(f"[ParseCache.set_many] {e}")
-
-        parse_total = _time_dbg.time() - _batch_start
-        print(f"[BATCH parse done] elapsed={parse_total:.2f}s submissions={len(pending_submissions)}")
 
         # ── フェーズ2: 解析完了後にまとめてキューへ投入 ──
         # ここで初めて TagApplyWorker が動き出す。以降は背後で

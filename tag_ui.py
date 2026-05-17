@@ -1825,7 +1825,7 @@ class TagApplyWorker(QThread):
         total = len(self.items)
 
         try:
-            # ── ストリーミング処理 + 詳細タイミングログ ──
+            # ── ストリーミング処理: チャンクごとに「既存読込 → マージ → DB書込 → EXIF enqueue」──
             CHUNK = 100
             inline_exif = (not defer_exif) and (not skip_exif_entirely)
 
@@ -1833,37 +1833,22 @@ class TagApplyWorker(QThread):
             skipped_no_tags = 0
             processed = 0
 
-            # フェーズ合計時間のアキュムレータ
-            sum_get_tags = 0.0
-            sum_prep = 0.0
-            sum_save_bulk = 0.0
-            sum_enqueue = 0.0
-            sum_emit = 0.0
-
-            print(f"[TAGAPPLY] start total={total} replace={self.is_replace_mode} "
-                  f"defer_exif={defer_exif} skip_exif={skip_exif_entirely}")
-
             self.progress_updated.emit(0, f"適用中... (0/{total})")
 
-            for chunk_idx, chunk_start in enumerate(range(0, total, CHUNK)):
+            for chunk_start in range(0, total, CHUNK):
                 if self.is_cancelled:
                     break
 
-                chunk_t0 = time.time()
                 chunk_items = self.items[chunk_start:chunk_start + CHUNK]
 
                 # 1) 既存タグを bulk 取得
-                t = time.time()
                 if self.is_replace_mode:
                     existing_map_chunk = {}
                 else:
                     chunk_paths = [p for p, _ in chunk_items]
                     existing_map_chunk = self.tag_manager.get_tags_map(chunk_paths)
-                t_get_tags = time.time() - t
-                sum_get_tags += t_get_tags
 
                 # 2) 最終タグセット構築
-                t = time.time()
                 prepared_chunk = []
                 for (image_path, filename) in chunk_items:
                     tags = self.analysis_results.get(image_path)
@@ -1881,19 +1866,11 @@ class TagApplyWorker(QThread):
                                 self.applied_count += 1
                             continue
                     prepared_chunk.append((image_path, filename, final_tags))
-                t_prep = time.time() - t
-                sum_prep += t_prep
 
                 # 3) DB 書き込み
-                t_bulk = 0.0
-                t_enqueue = 0.0
                 if prepared_chunk:
-                    t = time.time()
-                    bulk_items = [(p, t_) for (p, _f, t_) in prepared_chunk]
+                    bulk_items = [(p, t) for (p, _f, t) in prepared_chunk]
                     results = self.tag_manager.save_tags_bulk(bulk_items, write_to_file=inline_exif)
-                    t_bulk = time.time() - t
-                    sum_save_bulk += t_bulk
-
                     ok_set = {fp for fp, ok in results if ok}
 
                     for (path, filename, final_tags) in prepared_chunk:
@@ -1908,36 +1885,15 @@ class TagApplyWorker(QThread):
 
                     # 4) EXIF enqueue
                     if defer_exif and self.tag_writer is not None:
-                        t = time.time()
                         for (path, _f, final_tags) in prepared_chunk:
                             if path in ok_set:
                                 try:
                                     self.tag_writer.enqueue(path, final_tags)
                                 except Exception as e:
                                     print(f"[TagApplyWorker] EXIF enqueue 失敗: {e}")
-                        t_enqueue = time.time() - t
-                        sum_enqueue += t_enqueue
 
                 processed += len(chunk_items)
-
-                # 5) 進捗 emit
-                t = time.time()
-                self.progress_updated.emit(
-                    processed,
-                    f"適用中... ({processed}/{total})"
-                )
-                t_emit = time.time() - t
-                sum_emit += t_emit
-
-                chunk_total = time.time() - chunk_t0
-                print(f"[TAGAPPLY chunk {chunk_idx + 1}] "
-                      f"items={len(chunk_items)} prep_n={len(prepared_chunk)} "
-                      f"get={t_get_tags*1000:.0f}ms "
-                      f"prep={t_prep*1000:.0f}ms "
-                      f"bulk={t_bulk*1000:.0f}ms "
-                      f"enq={t_enqueue*1000:.0f}ms "
-                      f"emit={t_emit*1000:.0f}ms "
-                      f"total={chunk_total*1000:.0f}ms")
+                self.progress_updated.emit(processed, f"適用中... ({processed}/{total})")
 
             # 進捗の最終更新
             self.progress_updated.emit(
@@ -1947,14 +1903,6 @@ class TagApplyWorker(QThread):
             )
 
             elapsed_time = time.time() - start_time
-            print(f"[TAGAPPLY done] total_time={elapsed_time:.2f}s "
-                  f"sum_get_tags={sum_get_tags*1000:.0f}ms "
-                  f"sum_prep={sum_prep*1000:.0f}ms "
-                  f"sum_save_bulk={sum_save_bulk*1000:.0f}ms "
-                  f"sum_enqueue={sum_enqueue*1000:.0f}ms "
-                  f"sum_emit={sum_emit*1000:.0f}ms "
-                  f"applied={self.applied_count} skipped_no_change={skipped_no_change} "
-                  f"skipped_no_tags={skipped_no_tags}")
             if not self.is_cancelled:
                 self.completion_finished.emit(self.applied_count, self.total_tags, elapsed_time, self.failed_count)
         except Exception as e:
