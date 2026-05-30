@@ -78,13 +78,11 @@ class FavoriteWriteWorker(QThread):
         self._queue.put(self._SENTINEL)
 
     def run(self):
-        import time as _t
         while True:
             item = self._queue.get()
             if item is self._SENTINEL:
                 break
             file_path, is_favorite = item
-            _t0 = _t.time()
             try:
                 # SQLite (軽量 UPDATE 優先 / 必要なら INSERT) + EXIF 書き込み
                 self._tag_manager.write_favorite_persistence(file_path, is_favorite)
@@ -92,10 +90,6 @@ class FavoriteWriteWorker(QThread):
                 self.write_failed.emit(file_path, str(e))
             finally:
                 self._dec_pending()
-            elapsed = (_t.time() - _t0) * 1000
-            qsize = self._queue.qsize()
-            name = os.path.basename(file_path) if file_path else ""
-            print(f"[FAV worker] {name} fav={is_favorite} write={elapsed:.0f}ms queue_remaining={qsize}")
 
 
 class TagWriteWorker(QThread):
@@ -4349,51 +4343,35 @@ class ImageViewer(QMainWindow):
             return
         
         try:
-            import time as _t
-            _t0 = _t.time()
-
+            # 新しい状態は UI キャッシュを反転して算出（フォルダ読込時に
+            # tag_manager.get_favorite_map() で全画像分を bulk 取得済み）。
             current = bool(self._favorite_cache.get(image_path, False))
             new_state = not current
-            self._favorite_cache[image_path] = new_state
-            t_cache = (_t.time() - _t0) * 1000
 
-            t = _t.time()
+            # キャッシュ即更新（UI の真実）
+            self._favorite_cache[image_path] = new_state
+
+            # ハートボタンの状態を即更新
             if hasattr(self, 'favorite_heart_button') and self.favorite_heart_button:
                 self.update_favorite_heart_button(new_state)
-            t_heart = (_t.time() - t) * 1000
 
-            t = _t.time()
+            # Pillow デコードなしでハートオーバーレイだけ更新
             self._refresh_favorite_overlay_only()
-            t_overlay = (_t.time() - t) * 1000
 
-            t = _t.time()
+            # お気に入り後はグリッドの選択状態を解除（スライドで対象が
+            # ズレた状態のまま再度トグルしてしまう事故を防ぐ）
             self._clear_grid_selection()
-            t_clear = (_t.time() - t) * 1000
 
-            t = _t.time()
-            try:
-                self.tag_manager._save_favorite_to_qsettings(image_path, new_state)
-            except Exception as e:
-                print(f"QSettings favorite write failed: {e}")
-            t_qsettings = (_t.time() - t) * 1000
-
-            t = _t.time()
+            # 状態を表示
             status = "お気に入りに追加" if new_state else "お気に入りから削除"
             file_name = os.path.basename(image_path)
             self.show_message(f"✨ 「{file_name}」を{status}しました")
-            t_msg = (_t.time() - t) * 1000
 
-            t = _t.time()
+            # SQLite + EXIF の永続化はワーカーに委ねる（メインスレッドは即返る）
+            # ※ QSettings バックアップは macOS cfprefsd の plist 全体同期で
+            #   0.5〜5秒のスパイクを起こすため廃止（SQLite を唯一の真実とする）
             if self._favorite_writer is not None:
                 self._favorite_writer.enqueue(image_path, new_state)
-            t_enq = (_t.time() - t) * 1000
-
-            t_total = (_t.time() - _t0) * 1000
-            pending = self._favorite_writer.pending_count() if self._favorite_writer is not None else 0
-            print(f"[FAV toggle] new_state={new_state} "
-                  f"cache={t_cache:.1f}ms heart={t_heart:.1f}ms overlay={t_overlay:.1f}ms "
-                  f"clear={t_clear:.1f}ms qsettings={t_qsettings:.1f}ms msg={t_msg:.1f}ms "
-                  f"enq={t_enq:.1f}ms total={t_total:.1f}ms writer_pending={pending}")
 
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"お気に入り更新エラー: {str(e)}")
