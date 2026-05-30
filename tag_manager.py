@@ -775,11 +775,35 @@ class TagManager:
         return True
 
     def _write_favorite_side_effects(self, file_path, is_favorite):
-        """EXIF への書き込みのみ（ワーカースレッドから呼ぶ想定）。
-
-        QSettings は set_favorite_status_fast でメインスレッドから既に書き込まれている。
-        """
+        """EXIF への書き込みのみ（ワーカースレッドから呼ぶ想定）。"""
         self._save_favorite_to_exif(file_path, is_favorite)
+
+    def update_favorite_db(self, file_path, is_favorite):
+        """SQLite のみにお気に入り状態を即時反映する（メインスレッド用・軽量）。
+
+        実測で SQLite UPDATE は 6〜12ms と十分軽い。お気に入り検索/フィルタは
+        SQLite を直接読むため、ここで即時更新することで検索に即反映される。
+        重い EXIF 書き込みは呼び出し側でワーカーに逃がすこと。
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE image_tags SET is_favorite=?, updated_at=CURRENT_TIMESTAMP WHERE file_path=?',
+            (int(bool(is_favorite)), file_path)
+        )
+        rowcount = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        if rowcount == 0:
+            # 既存レコード無し: hash + tags + INSERT のフルパス
+            if os.path.exists(file_path):
+                file_hash = self.calculate_file_hash(file_path)
+                if file_hash:
+                    existing_tags = self.get_tags(file_path)
+                    self._save_to_database(file_path, file_hash, existing_tags, is_favorite)
+
+        self._notify_favorite_changed(file_path, bool(is_favorite))
 
     def write_favorite_persistence(self, file_path, is_favorite):
         """SQLite と EXIF にお気に入り状態を反映する（ワーカースレッド用）。
