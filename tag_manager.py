@@ -788,7 +788,10 @@ class TagManager:
         無ければ hash + tags + INSERT のフルパスにフォールバック。
         QSettings はメインスレッド側で先に更新済みである前提（thread-safe 観点）。
         """
+        import time as _t
+
         # 1) SQLite: まず軽量 UPDATE を試す
+        t = _t.time()
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
@@ -798,20 +801,32 @@ class TagManager:
         rowcount = cursor.rowcount
         conn.commit()
         conn.close()
+        t_sqlite = (_t.time() - t) * 1000
 
+        t_insert = 0.0
         if rowcount == 0:
             # 既存レコード無し: フルパスで INSERT（hash 計算 + tags 取得を含む）
+            ti = _t.time()
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"File not found: {file_path}")
             file_hash = self.calculate_file_hash(file_path)
             if file_hash:
                 existing_tags = self.get_tags(file_path)
                 self._save_to_database(file_path, file_hash, existing_tags, is_favorite)
+            t_insert = (_t.time() - ti) * 1000
 
+        t = _t.time()
         self._notify_favorite_changed(file_path, bool(is_favorite))
+        t_notify = (_t.time() - t) * 1000
 
         # 2) EXIF: 一番重いので最後（失敗してもメインの状態は崩れない）
+        t = _t.time()
         self._save_favorite_to_exif(file_path, is_favorite)
+        t_exif = (_t.time() - t) * 1000
+
+        print(f"[FAV persist] {os.path.basename(file_path)} fav={is_favorite} "
+              f"sqlite={t_sqlite:.0f}ms (rowcount={rowcount}) "
+              f"insert={t_insert:.0f}ms notify={t_notify:.0f}ms exif={t_exif:.0f}ms")
 
     def set_favorite_status(self, file_path, is_favorite):
         """画像のお気に入り状態を設定（SQLite + QSettings + EXIF の完全版・同期）"""
@@ -1330,13 +1345,27 @@ class TagManager:
 
     def _save_favorite_to_qsettings(self, file_path, is_favorite):
         """QSettingsにお気に入り状態をバックアップ保存"""
+        import time as _t
+        _t0 = _t.time()
+
         folder_path = os.path.dirname(file_path)
         file_name = os.path.basename(file_path)
-        
+
         favorites_key = f"favorites/{folder_path}"
+        t = _t.time()
         folder_favorites = self.settings.value(favorites_key, {}, type=dict)
+        t_read = (_t.time() - t) * 1000
+
         folder_favorites[file_name] = is_favorite
+
+        t = _t.time()
         self.settings.setValue(favorites_key, folder_favorites)
+        t_write = (_t.time() - t) * 1000
+
+        n = len(folder_favorites)
+        total = (_t.time() - _t0) * 1000
+        print(f"[FAV qsettings] {file_name} read={t_read:.0f}ms write={t_write:.0f}ms "
+              f"folder_n={n} total={total:.0f}ms")
     
     def _get_favorite_from_qsettings(self, file_path):
         """QSettingsバックアップからお気に入り状態を取得"""
