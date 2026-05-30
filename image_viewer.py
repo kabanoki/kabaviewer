@@ -84,8 +84,8 @@ class FavoriteWriteWorker(QThread):
                 break
             file_path, is_favorite = item
             try:
-                # SQLite (軽量 UPDATE 優先 / 必要なら INSERT) + EXIF 書き込み
-                self._tag_manager.write_favorite_persistence(file_path, is_favorite)
+                # SQLite はメインスレッドで即時更新済み。ここでは重い EXIF のみ。
+                self._tag_manager._write_favorite_side_effects(file_path, is_favorite)
             except Exception as e:
                 self.write_failed.emit(file_path, str(e))
             finally:
@@ -4362,12 +4362,19 @@ class ImageViewer(QMainWindow):
             # ズレた状態のまま再度トグルしてしまう事故を防ぐ）
             self._clear_grid_selection()
 
+            # SQLite はメインスレッドで即時更新（実測 6〜12ms と軽量）。
+            # お気に入り検索/フィルタは SQLite を直接読むため、これで検索に即反映される。
+            try:
+                self.tag_manager.update_favorite_db(image_path, new_state)
+            except Exception as e:
+                print(f"update_favorite_db failed: {e}")
+
             # 状態を表示
             status = "お気に入りに追加" if new_state else "お気に入りから削除"
             file_name = os.path.basename(image_path)
             self.show_message(f"✨ 「{file_name}」を{status}しました")
 
-            # SQLite + EXIF の永続化はワーカーに委ねる（メインスレッドは即返る）
+            # EXIF（重い）のみワーカーに委ねる。
             # ※ QSettings バックアップは macOS cfprefsd の plist 全体同期で
             #   0.5〜5秒のスパイクを起こすため廃止（SQLite を唯一の真実とする）
             if self._favorite_writer is not None:
