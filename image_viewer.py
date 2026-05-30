@@ -5092,7 +5092,14 @@ class ImageViewer(QMainWindow):
         """バックグラウンド適用完了時の処理"""
         # サイドバー更新
         self.update_sidebar_metadata()
-        
+
+        # タグタブのタグ一覧を再読み込み（新規追加されたタグを即座に反映）
+        if hasattr(self, 'tag_tab') and self.tag_tab is not None:
+            try:
+                self.tag_tab.load_all_tags()
+            except Exception as e:
+                print(f"[on_background_apply_completed] tag_tab refresh 失敗: {e}")
+
         # 次のキューがあるかチェック
         self.current_queue_index += 1
         has_next = self.current_queue_index < len(self.tag_apply_queue)
