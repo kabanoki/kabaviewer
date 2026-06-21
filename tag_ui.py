@@ -603,7 +603,6 @@ class TagTab(QWidget):
 
         # 「ORグループを追加」ボタン
         add_group_row_btn = QPushButton("➕ ORグループを追加")
-        add_group_row_btn.setObjectName("PrimaryButton")
         add_group_row_btn.setToolTip("AND結合される新しい検索行を追加")
         add_group_row_btn.clicked.connect(self.add_search_group_row)
         search_layout.addWidget(add_group_row_btn)
@@ -618,7 +617,9 @@ class TagTab(QWidget):
         exclude_input_layout = QHBoxLayout()
         self.exclude_input = QLineEdit()
         self.exclude_input.setPlaceholderText("除外したいタグを入力（カンマ区切りで複数指定可能）")
-        self.exclude_input.textChanged.connect(self.update_search_results)
+        # 入力中はハイライト再計算のみ。検索は「検索」ボタン / Enter で。
+        self.exclude_input.textChanged.connect(self._recompute_search_state)
+        self.exclude_input.returnPressed.connect(self.update_search_results)
         exclude_input_layout.addWidget(self.exclude_input)
         
         # 除外タグクリアボタン
@@ -632,13 +633,19 @@ class TagTab(QWidget):
         
         search_options_layout = QHBoxLayout()
 
-        # お気に入りフィルターチェックボックスを追加
+        # お気に入りフィルターチェックボックスを追加（検索ボタン押下時に反映）
         self.favorites_only_checkbox = QCheckBox("♡ お気に入りのみ")
         self.favorites_only_checkbox.setChecked(False)
-        self.favorites_only_checkbox.toggled.connect(self.update_search_results)
         search_options_layout.addWidget(self.favorites_only_checkbox)
         search_layout.addLayout(search_options_layout)
-        
+
+        # 検索実行ボタン（このボタン または 各入力欄で Enter を押すと検索が走る）
+        self.run_search_btn = QPushButton("🔍 検索")
+        self.run_search_btn.setObjectName("PrimaryButton")
+        self.run_search_btn.setToolTip("現在の条件で検索を実行（各入力欄で Enter でも可）")
+        self.run_search_btn.clicked.connect(self.update_search_results)
+        search_layout.addWidget(self.run_search_btn)
+
         left_layout.addLayout(search_layout)
         
         # ─── タグ一覧ツールバー ─────────────────────────────
@@ -1023,7 +1030,9 @@ class TagTab(QWidget):
 
         line = QLineEdit()
         line.setPlaceholderText("OR検索したいタグ（カンマ区切りで複数指定）")
-        line.textChanged.connect(self.update_search_results)
+        # 入力中はタグハイライトの再計算のみ。実際の検索は「検索」ボタン / Enter で。
+        line.textChanged.connect(self._recompute_search_state)
+        line.returnPressed.connect(self.update_search_results)
         # フォーカスを得たタイミングを記録するためにイベントフィルタを設置
         line.installEventFilter(self)
         row_layout.addWidget(line)
@@ -1056,7 +1065,8 @@ class TagTab(QWidget):
             self._last_focused_input = None
         row["container"].setParent(None)
         row["container"].deleteLater()
-        self.update_search_results()
+        # 行削除はハイライトのみ更新。検索は「検索」ボタン / Enter で。
+        self._recompute_search_state()
 
     def eventFilter(self, obj, event):
         """検索行の QLineEdit のフォーカス取得を捕捉して最後の入力先を記録する。"""
@@ -1115,27 +1125,35 @@ class TagTab(QWidget):
         """全グループ行の検索タグをクリア"""
         for row in self.group_rows:
             row["input"].clear()
-        # textChangedシグナルで自動的にupdate_search_resultsが呼ばれる
+        # textChanged → _recompute_search_state でハイライトのみ更新。
+        # 結果リストの更新は「🔍 検索」ボタン / Enter で。
     
     def clear_exclude_tags(self):
         """除外タグをクリア"""
         self.exclude_input.clear()
-        # textChangedシグナルで自動的にupdate_search_resultsが呼ばれる
+        # textChanged → _recompute_search_state でハイライトのみ更新。
+        # 結果リストの更新は「🔍 検索」ボタン / Enter で。
     
-    def update_search_results(self):
-        """検索結果を更新"""
-        exclude_text = self.exclude_input.text().strip()
+    def _recompute_search_state(self):
+        """検索条件（タググループ・除外タグ）を再計算し、タグ一覧のハイライトのみ更新する。
 
-        # タググループを再計算
+        入力中に毎回 DB 検索を走らせないため、検索の実行は update_search_results
+        （「🔍 検索」ボタン / 各入力欄での Enter）に分離している。
+        """
+        exclude_text = self.exclude_input.text().strip()
         self.current_tag_groups = self._collect_tag_groups()
         self.current_search_tags = set(tag for group in self.current_tag_groups for tag in group)
-        self.current_exclude_tags = set()
-
         if exclude_text:
             self.current_exclude_tags = set(tag.strip() for tag in exclude_text.split(',') if tag.strip())
-
-        # タグリストの視覚状態を更新
+        else:
+            self.current_exclude_tags = set()
         self.update_tag_visual_states()
+
+    def update_search_results(self):
+        """検索を実行して結果リストを更新する（明示トリガー専用）。"""
+        # 最新の検索条件 + ハイライトを反映
+        self._recompute_search_state()
+        exclude_text = self.exclude_input.text().strip()
 
         # すべての検索条件が空で、お気に入りフィルターもオフの場合は結果をクリア
         if not self.current_tag_groups and not exclude_text and not self.favorites_only_checkbox.isChecked():
